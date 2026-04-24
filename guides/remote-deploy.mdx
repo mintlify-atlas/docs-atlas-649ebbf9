@@ -1,0 +1,189 @@
+---
+title: "Deploy NixOS configurations to remote hosts"
+description: "Build NixOS outputs locally or on a build host, then transfer and activate them on a remote target using ncopy, nremote, nboh, and related helpers."
+---
+
+Remote deployment in this repo does not rely on a separate tool like `deploy-rs` or `colmena`. Instead, the shell helpers in `modules/home/nix-workflows.nix` combine `nh`, native `nix copy`, SSH, and `nixos-rebuild --build-host`/`--target-host` into three explicit models. Choosing the right model depends on one question: which machine should do the build work? The target host can build for itself when it has enough capacity; a slower or storage-constrained target is better served by a local build and closure transfer; a dedicated build machine can handle the heavy lifting when neither the orchestrating shell nor the final target is the right place for the build.
+
+<Warning>
+  `test` activates a configuration until the next reboot but does not set a new default boot generation. `switch` activates it and makes it the new default. Always prefer `test` first on any host you cannot easily recover by console — you can reboot to roll back if something breaks.
+</Warning>
+
+## The three deployment models
+
+<Tabs>
+  <Tab title="Model 1: Build on the target">
+
+Build and activate entirely on the remote target host. Use this when the target machine is powerful enough to build for itself and already has access to the flake inputs (or will fetch them over the network).
+
+### Commands
+
+| Command | Effect |
+|---|---|
+| `nremote-build <output> <target-host>` | Build on target, no activation |
+| `nremote-test <output> <target-host>` | Build on target, activate with `test` |
+| `nremote-switch <output> <target-host>` | Build on target, full `switch` |
+
+### Examples
+
+```bash
+# Build rpi4-tty on the Pi itself — no activation
+nremote-build rpi4-tty gars@rpi4.local
+
+# Build and activate with test — reverts on reboot if something is wrong
+nremote-test rpi4-tty gars@rpi4.local
+
+# Build and switch once you are confident
+nremote-switch rpi4-tty gars@rpi4.local
+```
+
+<Note>
+  All three helpers validate the output name against the live flake before connecting to the remote host.
+</Note>
+
+  </Tab>
+  <Tab title="Model 2: Build locally, send closure">
+
+Build the output on your current machine, then transfer the finished store closure over SSH and activate it on the target. Use this when the target is slow, storage-constrained, or inconvenient to build on directly.
+
+### Commands
+
+| Command | Effect |
+|---|---|
+| `ncopy <output> <ssh-host>` | Build locally if needed, copy closure to target |
+| `ncopy-test <output> <target-host>` | Build locally, copy, activate with `test` |
+| `ncopy-switch <output> <target-host>` | Build locally, copy, set system profile, full `switch` |
+
+`ncopy-activate` is an alias for `ncopy-test`.
+
+### Typical safe pattern
+
+```bash
+# Step 1: Prove the output builds locally
+nrb rpi4-tty
+
+# Step 2: Send the already-built closure to the target
+ncopy rpi4-tty gars@rpi4.local
+
+# Step 3: Activate on the target — test mode first
+ncopy-test rpi4-tty gars@rpi4.local
+```
+
+Because `nrb` already built the closure in step 1, `ncopy` only copies the result — it does not trigger a rebuild. `ncopy-test` activates the copied closure directly on the target without asking the target to rebuild anything.
+
+When you are ready to commit the change:
+
+```bash
+# Full switch after testing
+ncopy-switch rpi4-tty gars@rpi4.local
+```
+
+<Note>
+  `ncopy` uses `nix copy --to ssh://<host>` to transfer the closure. SSH access to the target is required.
+</Note>
+
+  </Tab>
+  <Tab title="Model 3: Separate build host">
+
+Your shell orchestrates, a designated build host performs the compilation, and the final target receives and activates the result. Use this when you want to separate the build machine from the target machine entirely.
+
+### Commands
+
+| Command | Effect |
+|---|---|
+| `nboh <output> <build-host> <target-host> [action]` | Build on build-host, activate on target-host |
+| `nship-remote <output> <build-host> <target-host>` | Shortcut for `nboh` with `switch` action |
+
+The `[action]` argument accepts `build`, `test`, or `switch` and defaults to `build`.
+
+### Examples
+
+```bash
+# Build rpi4-sway on localhost, send to Pi — no activation
+nboh rpi4-sway localhost gars@rpi4.local build
+
+# Build and activate with test
+nboh rpi4-sway localhost gars@rpi4.local test
+
+# Full switch from localhost to Pi
+nship-remote rpi4-sway localhost gars@rpi4.local
+```
+
+`nship-remote` is equivalent to `nboh <output> <build-host> <target-host> switch`.
+
+  </Tab>
+</Tabs>
+
+## Cross-architecture builds: Boreal and binfmt
+
+When you run `nrb rpi4-tty` on Boreal (x86\_64), the build runs on Boreal for an `aarch64-linux` target. This works because `hosts/boreal/base.nix` enables:
+
+```nix
+boot.binfmt.emulatedSystems = ["aarch64-linux"];
+```
+
+QEMU-based emulation lets Boreal execute aarch64 binaries during the build. The build is slower than a native aarch64 build but does not require a separate builder. This makes Boreal a convenient build host for the `rpi4-tty` and `rpi4-sway` outputs when using model 2 or model 3:
+
+```bash
+# Build rpi4-tty on Boreal (cross via binfmt), push to the Pi
+ncopy rpi4-tty gars@rpi4.local
+ncopy-test rpi4-tty gars@rpi4.local
+```
+
+## Which model to use
+
+| Situation | Recommended approach |
+|---|---|
+| Target is powerful and has network access to cache | Model 1: `nremote-build` / `nremote-switch` |
+| Target is slow or short on disk | Model 2: `nrb` → `ncopy` → `ncopy-test` |
+| You want to keep the build off the target entirely | Model 2 or Model 3: `ncopy-*` or `nboh` |
+| You need a dedicated build machine separate from your shell | Model 3: `nboh` |
+| You want a single-command remote switch | Model 3: `nship-remote` |
+
+<Warning>
+  `nremote-switch`, `ncopy-switch`, and `nship-remote` all perform a full `switch` — they set a new default boot generation on the target. Use `test` variants first on any host you can't recover easily from the console.
+</Warning>
+
+## Recommended sequence for safe remote updates
+
+<Steps>
+  <Step title="Build and diff locally">
+    ```bash
+    npre rpi4-tty
+    ```
+    Runs `fnixc` (formatting check) then `nrd rpi4-tty` (dry-run diff). Confirms the change evaluates and shows exactly what will change before touching the remote host.
+  </Step>
+  <Step title="Build the closure">
+    ```bash
+    nrb rpi4-tty
+    ```
+    Proves the output builds without activating anything. On Boreal, this compiles via binfmt emulation for aarch64 targets.
+  </Step>
+  <Step title="Copy to target">
+    ```bash
+    ncopy rpi4-tty gars@rpi4.local
+    ```
+    Transfers the already-built closure. No rebuild happens on the target.
+  </Step>
+  <Step title="Activate with test">
+    ```bash
+    ncopy-test rpi4-tty gars@rpi4.local
+    ```
+    Activates the config on the target. If anything breaks, rebooting reverts to the previous generation.
+  </Step>
+  <Step title="Switch when satisfied">
+    ```bash
+    ncopy-switch rpi4-tty gars@rpi4.local
+    ```
+    Sets the new generation as the default boot entry on the target.
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Local apply flows" icon="play" href="/guides/local-apply">
+    Build, test, and switch on the current machine
+  </Card>
+  <Card title="Shell helpers reference" icon="terminal" href="/reference/shell-helpers">
+    Full command listing with signatures and flags
+  </Card>
+</CardGroup>

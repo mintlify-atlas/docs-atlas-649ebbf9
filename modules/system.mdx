@@ -1,0 +1,270 @@
+---
+title: "System modules: NixOS shared building blocks"
+description: "Reference for every reusable NixOS module in modules/system/: CLI baseline, Sway, containers, gaming, Flatpak, gamescope, and BorgBackup."
+---
+
+System modules live in `modules/system/` and are NixOS modules — they configure the running system rather than a user's home environment. You include them through a `systemProfiles` entry in `flake.nix` or through `extraSystemModules` on a host descriptor.
+
+None of these modules contain machine-specific values. Where a module needs a host-local value (a path, a size, a driver name), it reads from the `my.*` options namespace and expects the host layer to supply the value.
+
+## cli.nix
+
+`modules/system/cli.nix` is the shared TTY and system baseline included in every NixOS output. It configures three things:
+
+- **OpenSSH** on port `2200` with password authentication and root login disabled
+- **Avahi mDNS** so hosts are discoverable as `<hostname>.local` on the local network
+- **PipeWire** audio, including ALSA and PulseAudio compatibility layers — this makes audio work even in TTY-only profiles
+
+```nix
+# modules/system/cli.nix
+_: {
+  services.openssh = {
+    enable = true;
+    settings = {
+      Port = 2200;
+      PermitRootLogin = "no";
+      PasswordAuthentication = false;
+      KbdInteractiveAuthentication = false;
+    };
+  };
+
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    openFirewall = true;
+    publish = {
+      enable = true;
+      addresses = true;
+      workstation = true;
+    };
+  };
+
+  services.pipewire = {
+    enable = true;
+    alsa.enable = true;
+    pulse.enable = true;
+  };
+}
+```
+
+This module is included in the `tty` system profile, so every NixOS output — even headless ones — gets Avahi, SSH key auth on port 2200, and PipeWire.
+
+<Note>
+Port 2200 must be open in the host firewall. `hosts/boreal/networking.nix` and `hosts/rpi4/configuration.nix` both open `2200/tcp` explicitly.
+</Note>
+
+## sway.nix
+
+`modules/system/sway.nix` extends the CLI baseline with everything needed to run a Wayland desktop:
+
+- **polkit** and **rtkit** for privilege escalation
+- **GNOME Keyring** with PAM login integration
+- **greetd** with `tuigreet` as the display manager, launching `sway` as the default session
+- **xdg-desktop-portal** with the `wlr` backend and GTK portal for file choosers
+- **Sway** with GTK wrapper features enabled
+- **dconf** for GTK settings
+- Roboto Mono, OpenMoji Color, and JetBrains Mono Nerd Font
+- `wayland` and `xwayland` in system packages
+
+```nix
+# modules/system/sway.nix (excerpt)
+{pkgs, ...}: {
+  security.polkit.enable = true;
+  security.rtkit.enable = true;
+
+  services.greetd = {
+    enable = true;
+    settings.default_session = {
+      command = "${pkgs.tuigreet}/bin/tuigreet --cmd sway";
+      user = "greeter";
+    };
+  };
+
+  xdg.portal = {
+    enable = true;
+    extraPortals = [pkgs.xdg-desktop-portal-gtk];
+    wlr.enable = true;
+  };
+
+  programs.sway = {
+    enable = true;
+    wrapperFeatures.gtk = true;
+  };
+}
+```
+
+This module is part of the `sway` and `sway-full` system profiles.
+
+## containers.nix
+
+`modules/system/containers.nix` establishes the Podman-first container runtime:
+
+- Enables `virtualisation.containers` and `virtualisation.podman`
+- Sets the OCI containers backend to `podman` (not Docker)
+- Enables DNS in the default Podman network
+- Schedules weekly `autoPrune` to remove unused images
+- Installs `podman-compose`, `buildah`, and `skopeo` as system packages
+
+```nix
+# modules/system/containers.nix
+{pkgs, ...}: {
+  virtualisation.containers.enable = true;
+  virtualisation.podman = {
+    enable = true;
+    dockerCompat = false;
+    defaultNetwork.settings.dns_enabled = true;
+    autoPrune = {
+      enable = true;
+      dates = "weekly";
+    };
+  };
+
+  virtualisation.oci-containers.backend = "podman";
+
+  environment.systemPackages = with pkgs; [
+    podman-compose
+    buildah
+    skopeo
+  ];
+}
+```
+
+<Note>
+`dockerCompat` is intentionally `false`. The repo uses Podman natively rather than wrapping it with a Docker socket shim.
+</Note>
+
+User-level shell aliases (`cdcont`, `cdquad`, `cdcomp`, `cdnpmapp`, `pc`) are defined separately in `modules/home/containers.nix`.
+
+## gaming.nix
+
+`modules/system/gaming.nix` enables system-level gaming support through the NixOS Steam module:
+
+- Enables `programs.steam` with `remotePlay.openFirewall = true` for Steam Link streaming
+- Adds `proton-ge-bin` as an extra compatibility package so Steam Play covers non-whitelisted titles
+
+```nix
+# modules/system/gaming.nix
+{pkgs, ...}: {
+  programs.steam = {
+    enable = true;
+    remotePlay.openFirewall = true;
+    extraCompatPackages = [pkgs.proton-ge-bin];
+  };
+}
+```
+
+This module is included in the `sway-full` system profile (`sway-full` composes the `sway` profile plus gaming). `hosts/boreal/graphics.nix` enables `hardware.graphics.enable32Bit` and AMD support that Steam requires on that machine.
+
+## flatpak.nix
+
+`modules/system/flatpak.nix` enables the system-level Flatpak stack:
+
+```nix
+# modules/system/flatpak.nix
+_: {
+  services.flatpak = {
+    enable = true;
+  };
+
+  xdg.portal.enable = true;
+}
+```
+
+This module sets up the system daemon and ensures the XDG portal is present. User-level remote configuration and app installs are handled separately by `modules/home/flatpak.nix`.
+
+## gamescope.nix
+
+`modules/system/gamescope.nix` configures a minimal gamescope session as an alternative to the full Sway desktop. It is designed for Steam-focused profiles rather than general desktop use:
+
+- Enables **rtkit** for real-time scheduling
+- Configures **greetd** to launch `steam-gamescope` via `tuigreet` instead of Sway
+- Sets `programs.gamescope.capSysNice = true` and enables `programs.steam.gamescopeSession`
+
+```nix
+# modules/system/gamescope.nix
+{pkgs, ...}: {
+  security.rtkit.enable = true;
+
+  services.greetd.enable = true;
+  services.greetd.settings.default_session = {
+    command = "${pkgs.tuigreet}/bin/tuigreet --cmd steam-gamescope";
+    user = "greeter";
+  };
+
+  programs.gamescope.capSysNice = true;
+  programs.steam.gamescopeSession.enable = true;
+}
+```
+
+<Note>
+`gamescope.nix` and `sway.nix` both configure greetd. Include only one in a given output.
+</Note>
+
+## borg.nix
+
+`modules/system/borg.nix` drives BorgBackup from host-supplied `my.borg.*` values. The module itself contains no hardcoded paths — the host provides everything through the options namespace.
+
+The module:
+
+- Asserts that `my.borg.repoPath` is set before proceeding
+- Installs `borgbackup` as a system package
+- Declares a `borgbackup.jobs.home` job using `my.borg.paths`, `my.borg.exclude`, `my.borg.startAt`, and `my.borg.keep.*`
+- Uses `repokey-blake2` encryption with `auto,zstd` compression
+- Reads the passphrase from `/root/borg-passphrase` via systemd `LoadCredential` so the backup user never has direct file access
+- Requires the repo mount to be present before the backup job runs
+
+```nix
+# modules/system/borg.nix (excerpt)
+{config, pkgs, ...}: let
+  borgCfg = config.my.borg;
+  user = config.my.primaryUser;
+  credName = "borg-passphrase";
+  credPath = "/root/${credName}";
+in {
+  services.borgbackup.jobs.home = {
+    inherit (borgCfg) paths;
+    repo = borgCfg.repoPath;
+    encryption = {
+      mode = "repokey-blake2";
+      passCommand = "cat %d/${credName}";
+    };
+    compression = "auto,zstd";
+    inherit (borgCfg) startAt;
+    inherit user;
+    inherit (borgCfg) exclude;
+
+    prune.keep = {
+      inherit (borgCfg.keep) daily weekly monthly yearly;
+    };
+  };
+
+  systemd.services.borgbackup-job-home = {
+    unitConfig.RequiresMountsFor = [borgCfg.repoPath];
+    serviceConfig.LoadCredential = "${credName}:${credPath}";
+  };
+}
+```
+
+To use this module, add it via `extraSystemModules` on your host descriptor and set the required `my.borg.*` values in your host configuration:
+
+```nix
+# hosts/yourhost/configuration.nix (example)
+{
+  my.borg = {
+    repoPath = "/mnt/backup/borg";
+    paths = ["/home/gars/documents" "/home/gars/dev"];
+    exclude = ["*/node_modules" "*/.direnv" "*/.git"];
+    startAt = "03:00";
+    keep = {
+      daily = 14;
+      weekly = 8;
+      monthly = 12;
+      yearly = 5;
+    };
+  };
+}
+```
+
+<Warning>
+Create `/root/borg-passphrase` (mode `0400`, owned by root) on the host before enabling this module. The service will fail to start if the credential file is missing.
+</Warning>

@@ -1,0 +1,141 @@
+---
+title: "Flake outputs: all eight configurations and their profiles"
+description: "Every nixosConfiguration, darwinConfiguration, and homeConfiguration produced by this flake — host, user, system profile, home profile, and overlays."
+---
+
+The flake exposes eight named outputs across three configuration types. Each output is a fully evaluated system or user environment assembled from a host descriptor, a system profile (NixOS only), a home profile, and zero or more home overlay groups. This page documents the exact composition of every current output and explains the three builder functions that produce them.
+
+## Output matrix
+
+The table below lists every output key and its composition. The **type** column refers to which flake attribute set the output lands in: `nixosConfigurations`, `darwinConfigurations`, or `homeConfigurations`.
+
+| Output | Type | Host | User | System profile | Home profile | Home overlays |
+|---|---|---|---|---|---|---|
+| `boreal-tty` | NixOS | `boreal` | `gars` | `tty` | `cli` | `ai` |
+| `boreal` | NixOS | `boreal` | `gars` | `sway-full` | `sway-full` | `ai` |
+| `nixos-vm` | NixOS | `nixos-vm` | `gars` | `tty` | `cli` | none |
+| `rpi4-tty` | NixOS | `rpi4` | `gars` | `tty` | `cli` | `ai` |
+| `rpi4-sway` | NixOS | `rpi4` | `gars` | `sway` | `sway` | `ai` |
+| `macbook` | nix-darwin | n/a | `htmlgxn` | n/a | `gui` | `ai` |
+| `fedora-mac` | Home Manager | n/a | `htmlgxn` | n/a | `sway` | none |
+| `jetson` | Home Manager | n/a | `gars` | n/a | `sway-config` | none |
+
+<Note>
+  The `macbook` output has no system profile because nix-darwin manages the macOS system through its own module system rather than through the shared NixOS system profile abstraction.
+</Note>
+
+## Builder functions
+
+Three functions in `parts/lib.nix` construct flake outputs from descriptor attrsets. All three are exposed to the other `parts/` modules through `_module.args.flakeLib`.
+
+### `mkOutput` — NixOS
+
+`mkOutput` builds a `nixpkgs.lib.nixosSystem` value. It accepts:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `hostName` | string | Key into the `hosts` attrset in `parts/lib.nix` |
+| `userName` | string | Key into the `users` attrset; selects the Home Manager user module |
+| `systemProfile` | string | Key into `systemProfiles`; selects NixOS system modules |
+| `homeProfile` | string | Key into `homeProfiles`; selects Home Manager modules |
+| `homeOverlays` | list of strings | Overlay group names to resolve and append to the HM import list |
+| `nixpkgsOverlays` | list of overlays | Raw nixpkgs overlays applied to the host's `nixpkgs.overlays` |
+
+The builder assembles: shared system modules → host platform config → host module → system profile modules → host extra system modules → `home-manager` NixOS module → the assembled home imports.
+
+### `mkDarwinOutput` — nix-darwin
+
+`mkDarwinOutput` builds a `nix-darwin.lib.darwinSystem` value. It accepts:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `userName` | string | macOS username; sets `home-manager.users.\${userName}` and `home.homeDirectory` |
+| `homeProfile` | string | Key into `homeProfiles`; selects Home Manager modules |
+| `system` | string | Target system triple (currently `aarch64-darwin`) |
+| `hostHomeModules` | list of paths | Additional HM modules specific to this Darwin host |
+| `homeOverlays` | list of strings | Overlay group names resolved to HM modules |
+
+The builder always imports `hosts/macbook/configuration.nix` and the Lix module, then attaches Home Manager through `home-manager.darwinModules.home-manager`. `home.homeDirectory` is forced to `/Users/${userName}` to match macOS conventions.
+
+### `mkHomeOutput` — standalone Home Manager
+
+`mkHomeOutput` builds a `home-manager.lib.homeManagerConfiguration` value for systems where Nix is installed but NixOS is not. It accepts:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `userName` | string | Unix username; sets `home.username` and `home.homeDirectory` |
+| `homeProfile` | string | Key into `homeProfiles`; selects Home Manager modules |
+| `system` | string | Target system triple (e.g., `aarch64-linux`) |
+| `hostHomeModules` | list of paths | Additional HM modules specific to this standalone host |
+| `homeOverlays` | list of strings | Overlay group names resolved to HM modules |
+
+`home.homeDirectory` defaults to `/home/${userName}`. Standalone outputs require manual `/etc/nix/nix.conf` cache configuration on the target system — see [standalone HM setup](/guides/standalone-hm-setup) for the required substituters and trusted public keys.
+
+## Home overlay groups
+
+Overlay groups are named lists of Home Manager modules that outputs opt into explicitly. There is currently one group:
+
+### `ai`
+
+The `ai` group imports `modules/home/ai.nix` and installs the following packages:
+
+- `claude-code`
+- `qwen-code`
+- `codex`
+- `opencode`
+- `ollama`
+
+It also sets `my.ollamaPackage = pkgs.ollama` as the default Ollama runtime. Individual hosts can override this via `lib.mkDefault`:
+
+- `boreal` and `boreal-tty` override to `pkgs.ollama-rocm` in `hosts/boreal/home.nix` to use the ROCm-accelerated build for the AMD GPU.
+
+<Tip>
+  To add the `ai` overlay to an output, add `"ai"` to the `homeOverlays` list in the output's descriptor attrset in `parts/nixos.nix`, `parts/darwin.nix`, or `parts/home.nix`.
+</Tip>
+
+## Output-by-output notes
+
+### `boreal-tty` and `boreal`
+
+Both outputs target the `boreal` host (x86\_64-linux). `boreal-tty` uses the `tty` system profile and `cli` home profile — SSH, Avahi mDNS, PipeWire, and the CLI package baseline, with no Sway compositor. `boreal` uses `sway-full`, which extends the Sway compositor with Flatpak, gaming support (Steam, Proton), and extra GUI packages. Both outputs include the `ai` overlay and host-local overrides from `hosts/boreal/home.nix` (ROCm Ollama, kitty terminal, dual keyboard layout).
+
+### `nixos-vm`
+
+A minimal x86\_64 VM profile using the `tty` system and `cli` home profile. No AI overlay. Useful for testing changes in a clean environment before applying to a physical host.
+
+### `rpi4-tty` and `rpi4-sway`
+
+Both outputs target the `rpi4` host (aarch64-linux) and include `nixos-hardware.nixosModules.raspberry-pi-4`. `rpi4-tty` is a headless TTY configuration; `rpi4-sway` adds the Sway compositor via the `sway` system and home profiles. The ARM `sway` profile omits Flatpak and gaming compared to `sway-full`. Both include the `ai` overlay.
+
+### `macbook`
+
+The sole nix-darwin output. Targets `aarch64-darwin` (Apple Silicon). There is no system profile — nix-darwin handles the macOS system layer directly through `hosts/macbook/configuration.nix`. The `gui` home profile adds `modules/home/gui-base-apps.nix`. Host-local overrides in `hosts/macbook/home.nix` add a nushell library path and GitHub SSH configuration. Apply with `ndrs` or `nh darwin switch . -H macbook`.
+
+### `fedora-mac`
+
+A standalone Home Manager output for Fedora on Apple Silicon (Asahi Linux), targeting aarch64-linux. Uses the `sway` home profile (Sway compositor config + apps, without Flatpak or gaming). No AI overlay. Apply with `nhms` or `nh home switch .#fedora-mac`.
+
+### `jetson`
+
+A standalone Home Manager output for Jetson Orin Nano, targeting aarch64-linux. Uses the `sway-config` home profile, which generates Sway, Waybar, fuzzel, mako, and kitty configuration files but sets `package = null` for each GUI program — proprietary NVIDIA Tegra drivers are incompatible with nix-built GUI apps on Jetson. All GUI programs are installed via `apt`; Home Manager only manages their configuration. Apply with `nhms jetson` or `nh home switch .#jetson`.
+
+<Note>
+  The `cyberdeck` output (Jetson Orin Nano as a NixOS host via `jetpack-nixos`) is defined in the source but disabled. The active Jetson target is the standalone `jetson` Home Manager output.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture and composition" icon="cubes" href="/architecture/composition">
+    How hosts, profiles, and overlay groups are assembled in `flake.nix`
+  </Card>
+  <Card title="Profile reference" icon="sliders" href="/architecture/profiles">
+    What each system and home profile includes
+  </Card>
+  <Card title="Adding a host" icon="server" href="/guides/adding-a-host">
+    Walk through adding a new NixOS, Darwin, or standalone HM output
+  </Card>
+  <Card title="Standalone HM setup" icon="laptop" href="/guides/standalone-hm-setup">
+    Prerequisites and `nix.conf` cache configuration for non-NixOS targets
+  </Card>
+</CardGroup>

@@ -1,0 +1,99 @@
+---
+title: "Raspberry Pi 4: aarch64 NixOS with tty and Sway"
+description: "ARM NixOS host with two outputs — a minimal TTY profile and a Sway desktop profile — built on boreal via emulated aarch64 and deployed with ncopy."
+---
+
+The `rpi4` host is a Raspberry Pi 4 running NixOS on aarch64. It produces two flake outputs — `rpi4-tty` for a headless TTY setup and `rpi4-sway` for a Sway desktop. The host boots via U-Boot with the `generic-extlinux-compatible` bootloader. SSH root login is enabled to support initial setup and remote deployment without a local session.
+
+## Outputs
+
+| Output | System profile | Home profile | Home overlays |
+| --- | --- | --- | --- |
+| `rpi4-tty` | `tty` | `cli` | `ai` |
+| `rpi4-sway` | `sway` | `sway` | `ai` |
+
+Apply locally (if building on the rpi4):
+
+```bash
+nr rpi4-tty
+nr rpi4-sway
+```
+
+## Host configuration
+
+`hosts/rpi4/configuration.nix` handles everything for this simpler host — there is no split-file structure as with boreal.
+
+Key settings:
+
+- U-Boot extlinux bootloader (`boot.loader.generic-extlinux-compatible.enable = true`)
+- `nixos-hardware.nixosModules.raspberry-pi-4` is added via `extraSystemModules` in `flake.nix` — it is not imported directly inside `configuration.nix`
+- NetworkManager for networking
+- Port `2200/tcp` open in the firewall (SSH alternate port, consistent with all other NixOS hosts)
+- `nix.settings.trusted-users = ["root" "gars"]` to allow remote `nix copy` operations
+
+## ARM profile differences
+
+The ARM profiles (`sway` and `cli`) are a subset of their x86\_64 counterparts. Compared to the `sway-full` / `sway` profiles on boreal:
+
+- **No Flatpak** — `modules/system/flatpak.nix` and `modules/home/flatpak.nix` are not included
+- **No gaming** — `modules/system/gaming.nix` is not included in the `sway` system profile on ARM
+- The `sway` system profile on rpi4 is lighter than `sway-full`; it omits heavier desktop extras present in the full profile
+
+The `ai` overlay is included on both rpi4 outputs, providing the same CLI AI tooling as on boreal. Ollama defaults to `pkgs.ollama` (CPU-only) since the rpi4 host module does not override `my.ollamaPackage`.
+
+## Building from boreal
+
+Because building NixOS for aarch64 on a native ARM device is slow, the typical workflow is to build the rpi4 outputs on boreal and transfer the closure. Boreal enables binfmt emulation for `aarch64-linux` in `hosts/boreal/base.nix`:
+
+```nix
+boot.binfmt.emulatedSystems = ["aarch64-linux"];
+```
+
+This lets Nix evaluate and build aarch64 derivations on boreal's x86\_64 CPU via transparent QEMU emulation.
+
+<Steps>
+  <Step title="Build the rpi4 output on boreal">
+    Run the build on boreal without switching:
+
+    ```bash
+    nrb rpi4-tty
+    # or
+    nrb rpi4-sway
+    ```
+  </Step>
+  <Step title="Copy the closure to the rpi4">
+    Use `ncopy` to push the built closure over SSH:
+
+    ```bash
+    ncopy rpi4-tty
+    ```
+
+    `ncopy` runs `nix copy` with the rpi4 SSH target configured in boreal's Home Manager SSH config (port 2200, `gars@rpi4.local`).
+  </Step>
+  <Step title="Activate on the rpi4">
+    SSH into the rpi4 and switch to the new generation:
+
+    ```bash
+    ssh rpi4   # uses the SSH match block in boreal's home.nix
+    nr rpi4-tty
+    ```
+
+    Alternatively, use `ncopy-switch` from boreal to copy and activate in one step.
+  </Step>
+</Steps>
+
+See [remote deployment](/guides/remote-deploy) for the full `ncopy`, `ncopy-test`, `ncopy-switch`, `nremote-build`, and `nremote-switch` command reference.
+
+## Initial setup notes
+
+`hardware-configuration.nix` must be generated on the device after the first NixOS install:
+
+```bash
+nixos-generate-config --show-hardware-config > hosts/rpi4/hardware-configuration.nix
+```
+
+The file is currently commented out in the imports list until it exists. Do not edit it manually.
+
+<Warning>
+  `hosts/rpi4/hardware-configuration.nix` is generated output. Never edit it by hand — regenerate it with `nixos-generate-config` if the hardware changes.
+</Warning>

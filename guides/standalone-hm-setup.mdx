@@ -1,0 +1,292 @@
+---
+title: "Set up standalone Home Manager on Fedora or Jetson"
+description: "Install and configure the system prerequisites for standalone Home Manager on Fedora (Apple Silicon) and Jetson Orin Nano (Ubuntu) before your first nhms apply."
+---
+
+Standalone Home Manager runs on top of an existing Linux distribution — Nix manages your shell, dotfiles, and desktop config, but the host OS handles hardware drivers, system services, and (on Jetson) GUI applications. Before you can run `nhms` for the first time, the host OS must provide the components that NixOS would normally configure automatically: binary cache substituters, the Sway compositor with the right capabilities, a login manager, audio, portals, and the necessary PAM entries. This guide covers those prerequisites for the two standalone HM targets in this repo: `fedora-mac` (Fedora on Asahi Linux / Apple Silicon) and `jetson` (Ubuntu on Jetson Orin Nano).
+
+## Nix cache configuration
+
+On NixOS, substituters and trusted public keys are set in `/etc/nix/nix.conf` automatically by the flake's library layer. On standalone HM hosts you must add them manually, or every build will skip the binary cache and compile from source.
+
+Add the following to `/etc/nix/nix.conf`:
+
+```ini
+substituters = https://cache.nixos.org/ https://nix-community.cachix.org https://yazi.cachix.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=
+```
+
+Then restart the nix daemon:
+
+```bash
+sudo systemctl restart nix-daemon.service
+```
+
+<Note>
+  On Fedora, if `nix-daemon.service` is not found by systemd, copy the unit files from `/nix/var/nix/profiles/default/lib/systemd/system/` into `/etc/systemd/system/` and run `sudo systemctl daemon-reload` before restarting.
+</Note>
+
+## System prerequisites by host
+
+<Tabs>
+  <Tab title="Fedora (fedora-mac)">
+
+The `fedora-mac` output targets Fedora on Apple Silicon (Asahi Linux). The home profile is `sway`, so Home Manager manages all Sway config, Waybar, keybindings, and theming — but the system must provide Sway itself with the correct capabilities.
+
+### Install packages
+
+```bash
+# Sway and Wayland
+sudo dnf install sway wayland xorg-x11-server-Xwayland
+
+# Login manager
+sudo dnf install greetd greetd-tuigreet
+sudo systemctl enable greetd
+
+# Portals and desktop integration
+sudo dnf install xdg-desktop-portal-wlr xdg-desktop-portal-gtk
+sudo dnf install dconf
+
+# Security and auth
+sudo dnf install polkit rtkit
+sudo dnf install gnome-keyring
+
+# Audio (likely already present)
+sudo dnf install pipewire pipewire-pulseaudio wireplumber
+
+# GTK dark theme default
+echo 'GTK_THEME=Adwaita-dark' | sudo tee -a /etc/environment
+```
+
+### Fonts
+
+```bash
+# Roboto Mono (primary UI font)
+sudo dnf install google-roboto-mono-fonts
+```
+
+OpenMoji Color and JetBrains Mono Nerd Font are not in Fedora repos. Install them manually:
+
+1. Download the OpenMoji Color TTF from the [OpenMoji releases page](https://github.com/hfg-gmuend/openmoji/releases).
+2. Download JetBrains Mono Nerd Font from [nerdfonts.com](https://www.nerdfonts.com/font-downloads).
+3. Place both in `~/.local/share/fonts/`.
+4. Run `fc-cache -fv` to rebuild the font cache.
+
+### PAM entry for swaylock
+
+swaylock needs a PAM entry to authenticate the lock screen:
+
+```bash
+sudo tee /etc/pam.d/swaylock <<'EOF'
+auth    include login
+EOF
+```
+
+### Configure greetd
+
+Edit `/etc/greetd/config.toml` to launch Sway from the greeter:
+
+```toml
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --cmd sway"
+user = "greeter"
+```
+
+  </Tab>
+  <Tab title="Jetson (Ubuntu)">
+
+The `jetson` output targets the Jetson Orin Nano running Ubuntu with JetPack. The home profile is `sway-config` rather than `sway`. The difference matters: `sway-config` tells Home Manager to generate all config files (Sway, Kitty, Waybar, Fuzzel, Mako, shell, Neovim) but not to install the GUI binaries. All GUI packages are installed via `apt` because Jetson's proprietary NVIDIA/tegra drivers are incompatible with nix-built binaries that link against Mesa.
+
+### Why `package = null`
+
+The `hosts/jetson/home.nix` file sets `wayland.windowManager.sway.package = null` and equivalent overrides for other GUI packages. This tells Home Manager to write the config files to `~/.config/` without placing any executables in the Nix store profile. The system-installed binaries from `apt` pick up those config files at runtime.
+
+### Install packages via apt
+
+```bash
+# Sway ecosystem
+sudo apt install sway swaybg swaylock swayidle wlsunset wl-clipboard grim
+sudo apt install fuzzel waybar mako-notifier xwayland
+
+# Desktop utilities
+sudo apt install kitty thunar pavucontrol brightnessctl
+sudo apt install policykit-1-gnome network-manager-gnome
+
+# Portals and desktop integration
+sudo apt install xdg-desktop-portal-wlr xdg-desktop-portal-gtk
+sudo apt install dconf-cli
+
+# Security and auth
+sudo apt install policykit-1 rtkit
+sudo apt install gnome-keyring
+
+# Audio
+sudo apt install pipewire pipewire-pulse wireplumber
+
+# GTK dark theme default
+echo 'GTK_THEME=Adwaita-dark' | sudo tee -a /etc/environment
+
+# Media
+sudo apt install mpv
+```
+
+For Brave, Librewolf, Obsidian, and Signal, install from their official repositories or `.deb` packages — they are not available in standard Ubuntu repos.
+
+### Fonts
+
+```bash
+# Roboto Mono
+sudo apt install fonts-roboto-unhinted
+
+# OpenMoji Color (Ubuntu 23.04+)
+sudo apt install fonts-openmoji
+```
+
+JetBrains Mono Nerd Font is not in Ubuntu repos. Download it from [nerdfonts.com](https://www.nerdfonts.com/font-downloads), place it in `~/.local/share/fonts/`, and run `fc-cache -fv`.
+
+### PAM entry for swaylock
+
+```bash
+sudo tee /etc/pam.d/swaylock <<'EOF'
+auth    include login
+EOF
+```
+
+### Kernel module setup (once)
+
+The NVIDIA DRM kernel module must be loaded with modesetting enabled for Sway to use the display:
+
+```bash
+echo nvidia-drm | sudo tee /etc/modules-load.d/nvidia-drm.conf
+echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf
+```
+
+Reboot after making these changes.
+
+### Environment variables
+
+`hosts/jetson/home.nix` sets these session variables automatically after `nhms jetson`:
+
+- `WLR_NO_HARDWARE_CURSORS=1` — required for proprietary NVIDIA drivers
+- `CUDA_PATH=/usr/local/cuda` — for compute workloads
+
+### The sway alias
+
+Because sway does not officially support proprietary NVIDIA drivers, the Jetson home config adds an alias in both bash and nushell:
+
+```bash
+sway  →  sway --unsupported-gpu
+```
+
+You can type `sway` normally; the `--unsupported-gpu` flag is passed automatically.
+
+### Starting Sway without greetd
+
+`greetd` is not available in Ubuntu repos. The simplest approach for a single-user Jetson is to auto-start Sway from TTY1. A flag file prevents a login loop if Sway exits or crashes.
+
+**Bash** — configured via `programs.bash.profileExtra` in Home Manager (writes to `~/.bash_profile`):
+
+```nix
+programs.bash.profileExtra = ''
+  if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ] && [ ! -f /tmp/.sway-exited ]; then
+      touch /tmp/.sway-exited
+      exec sway
+  fi
+'';
+```
+
+**Nushell** — configured via `programs.nushell.extraLogin` in Home Manager (writes to `login.nu`):
+
+```nix
+programs.nushell.extraLogin = ''
+  if ($env.WAYLAND_DISPLAY? | is-empty) and ((tty) == "/dev/tty1") and (not ("/tmp/.sway-exited" | path exists)) {
+      touch /tmp/.sway-exited
+      exec sway
+  }
+'';
+```
+
+The flag file lives in `/tmp`, which is a tmpfs — it clears on reboot. To relaunch Sway manually after it exits without rebooting:
+
+```bash
+rm /tmp/.sway-exited
+sway
+```
+
+<Note>
+  If Sway fails to create a Wayland backend when launched from Nushell, use `exec bash -c 'exec sway'` instead of `exec sway` in the Nushell login snippet. Nushell's environment handling can prevent Wayland compositor startup in some configurations.
+</Note>
+
+  </Tab>
+</Tabs>
+
+## Fontconfig for standalone HM
+
+On NixOS, `fonts.fontconfig.defaultFonts.emoji` is a NixOS option that sets the system-wide emoji font family. Home Manager can discover user-installed fonts but cannot set fontconfig default families on its own — that requires a `fonts.conf` file.
+
+Create `~/.config/fontconfig/fonts.conf`:
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <!-- Default emoji font -->
+  <alias>
+    <family>emoji</family>
+    <prefer>
+      <family>OpenMoji Color</family>
+    </prefer>
+  </alias>
+
+  <!-- Default monospace font -->
+  <alias>
+    <family>monospace</family>
+    <prefer>
+      <family>Roboto Mono</family>
+    </prefer>
+  </alias>
+</fontconfig>
+```
+
+Then rebuild the font cache:
+
+```bash
+fc-cache -fv
+```
+
+## Apply the Home Manager configuration
+
+Once the system prerequisites are in place, run `nhms` to apply the Home Manager configuration for your output.
+
+<Steps>
+  <Step title="Apply for fedora-mac">
+    ```bash
+    nhms
+    ```
+    The `fedora-mac` output is the default. You can also write `nhms fedora-mac` explicitly.
+  </Step>
+  <Step title="Apply for jetson">
+    ```bash
+    nhms jetson
+    ```
+    This generates all config files but does not install GUI binaries — those come from `apt`.
+  </Step>
+  <Step title="Verify the setup">
+    Confirm these work before logging in through the greeter or starting Sway from TTY1:
+    - `sway --version` — system Sway is installed
+    - `swaylock --version` — swaylock is installed
+    - `wpctl status` — PipeWire is running
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Local apply flows" icon="play" href="/guides/local-apply">
+    nhms, nhmb, and all other local apply commands
+  </Card>
+  <Card title="Standalone HM hosts" icon="laptop" href="/hosts/standalone-hm">
+    Overview of the fedora-mac and jetson outputs
+  </Card>
+</CardGroup>

@@ -1,0 +1,319 @@
+---
+title: "Shell helper reference: nr, nrb, ncopy, nboh"
+description: "Complete reference for every shell helper in nix-workflows.nix — daily inspection, formatting, evaluation, local apply, and cross-host remote deployment."
+---
+
+The shell helpers in this repo are defined in `modules/home/nix-workflows.nix` and imported by `modules/home/users/common.nix`, making them available in every shell session on every host. They wrap `nh`, `nix`, `nix flake`, and SSH into tab-completable commands grouped by task — so daily work, validation, and multi-host deployment stay explicit without requiring you to remember long flag sequences. All commands that target a named output validate that output against the live flake before running, which prevents silently deploying to a wrong or nonexistent configuration.
+
+<Note>
+  Platform availability varies. `nr`, `nrb`, `nrt`, `nrd`, `ncopy`, `ncopy-test`, `ncopy-switch`, `nremote-*`, `nboh`, `ncopy-activate`, `nship`, and `nship-remote` are NixOS-only. `ndrs` and `ndrb` target nix-darwin. `nhms` and `nhmb` target standalone Home Manager. All other helpers are cross-platform wherever the underlying commands exist.
+</Note>
+
+## Daily commands
+
+These are the commands you reach for most often — opening the flake, listing outputs, and searching packages.
+
+<AccordionGroup>
+  <Accordion title="nflk">
+    Open `flake.nix` in your editor.
+
+    ```bash
+    nflk
+    ```
+  </Accordion>
+
+  <Accordion title="npath">
+    Print the repo paths used by the helper surface: `repoRoot`, `containersRoot`, and the resolved flake reference.
+
+    ```bash
+    npath
+    # repoRoot=/home/gars/nixos-config
+    # containersRoot=/home/gars/containers
+    # flakeRef=/home/gars/nixos-config
+    ```
+  </Accordion>
+
+  <Accordion title="nout, noutn, noutd, nouth">
+    List flake outputs. `nout` prints all three families; the suffixed variants print only one.
+
+    ```bash
+    nout        # nixosConfigurations + darwinConfigurations + homeConfigurations
+    noutn       # NixOS outputs only
+    noutd       # nix-darwin outputs only
+    nouth       # standalone Home Manager outputs only
+    ```
+  </Accordion>
+
+  <Accordion title="nshow">
+    Show the type, installable path, and apply command for a named output.
+
+    ```bash
+    nshow boreal
+    # type: nixos
+    # installable: /home/gars/nixos-config#nixosConfigurations.boreal.config.system.build.toplevel
+    # switch: nr boreal
+    ```
+  </Accordion>
+
+  <Accordion title="ns">
+    Open an interactive `nix-search-tv` picker with `fzf` preview. Pass an optional query to pre-fill the search prompt.
+
+    ```bash
+    ns            # open picker
+    ns ripgrep    # open picker with "ripgrep" pre-filled
+    ```
+
+    Requires `nix-search-tv` and `fzf` to be available in `$PATH`.
+  </Accordion>
+</AccordionGroup>
+
+## Format and validate
+
+Use these before committing or before running a switch operation.
+
+<AccordionGroup>
+  <Accordion title="fnix">
+    Format every tracked Nix file in the repo (excludes `hardware-configuration.nix` files). Runs `nix fmt` from the repo root.
+
+    ```bash
+    fnix
+    ```
+
+    `nfmt` is an alias for `fnix`.
+  </Accordion>
+
+  <Accordion title="fnixc">
+    Formatting check only — exits non-zero if any file would change. Use this in CI or in `npre` to gate a build on clean formatting.
+
+    ```bash
+    fnixc
+    ```
+  </Accordion>
+
+  <Accordion title="ncheck">
+    Run the default fast validation set: `fnixc` followed by `nix flake check` on this repo.
+
+    ```bash
+    ncheck
+    ```
+  </Accordion>
+
+  <Accordion title="ncheck-full">
+    Run the broader validation set: everything in `ncheck`, then evaluate all three output families (`nixosConfigurations`, `darwinConfigurations`, `homeConfigurations`).
+
+    ```bash
+    ncheck-full
+    ```
+  </Accordion>
+
+  <Accordion title="ndead">
+    Run `deadnix` on the repo to find unused Nix expressions.
+
+    ```bash
+    ndead
+    ```
+
+    Requires `deadnix` to be installed.
+  </Accordion>
+
+  <Accordion title="nstatix">
+    Run `statix check` on the repo to catch common Nix anti-patterns.
+
+    ```bash
+    nstatix
+    ```
+
+    Requires `statix` to be installed.
+  </Accordion>
+</AccordionGroup>
+
+## Evaluate and build
+
+These give you direct access to flake attributes and store paths without triggering an activation.
+
+<AccordionGroup>
+  <Accordion title="neval">
+    Evaluate a flake attribute path from this repo and print the result.
+
+    ```bash
+    neval nixosConfigurations.boreal.config.networking.hostName --raw
+    neval nixosConfigurations.boreal.config.system.build.toplevel
+    ```
+  </Accordion>
+
+  <Accordion title="nb">
+    Build a repo flake attribute. Passes extra arguments to `nix build`.
+
+    ```bash
+    nb nixosConfigurations.boreal.config.system.build.toplevel
+    nb nixosConfigurations.rpi4-tty.config.system.build.toplevel --keep-failed
+    ```
+  </Accordion>
+
+  <Accordion title="nbi">
+    Build any arbitrary installable directly (not scoped to the repo flake).
+
+    ```bash
+    nbi nixpkgs#ripgrep
+    nbi /nix/store/...-some-derivation.drv
+    ```
+  </Accordion>
+
+  <Accordion title="nchk">
+    Run `nix flake check`. Defaults to this repo if no argument is given.
+
+    ```bash
+    nchk             # check this repo
+    nchk /some/path  # check another flake
+    ```
+  </Accordion>
+
+  <Accordion title="nmeta">
+    Show the store path and closure size for an installable or repo attribute path.
+
+    ```bash
+    nmeta nixosConfigurations.boreal.config.system.build.toplevel
+    ```
+  </Accordion>
+
+  <Accordion title="nsize">
+    Quick alias for closure size inspection — same output as `nmeta`.
+
+    ```bash
+    nsize nixosConfigurations.boreal.config.system.build.toplevel
+    ```
+  </Accordion>
+
+  <Accordion title="nwhy">
+    Inspect why one store path depends on another.
+
+    ```bash
+    nwhy nixpkgs#firefox nixpkgs#glibc
+    ```
+  </Accordion>
+
+  <Accordion title="nrepl">
+    Open `nix repl` loaded with this repo's flake.
+
+    ```bash
+    nrepl
+    # nix-repl> nixosConfigurations.boreal.config.networking.hostName
+    # "boreal"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Local apply — NixOS
+
+These wrap `nh os` and validate the output name before running. The build always happens on the machine where you run the command; `-H <output>` selects which flake configuration to build, not which machine does the work. See [remote deploy](/guides/remote-deploy) for sending results to another host.
+
+| Command | What it does |
+| --- | --- |
+| `nr <output>` | `nh os switch . -H <output>` — build and activate, making this the default boot generation |
+| `nrb <output>` | `nh os build . -H <output>` — build without activating |
+| `nrt <output>` | `nh os test . -H <output>` — activate until next reboot, does not set a new boot generation |
+| `nrd <output>` | `nh os build -d . -H <output>` — dry-run with diff, no build artefact |
+| `nrs` | `nh os switch . -H boreal` — shorthand for the primary boreal output |
+| `nrtty` | `nh os switch . -H boreal-tty` — shorthand for the TTY boreal output |
+| `npre <output>` | `fnixc` then `nrd <output>` — format check and dry-run in one step |
+| `nship <output>` | `npre <output>` then `nr <output>` — validate, diff, and switch in one step |
+
+```bash
+# Build only, inspect the diff
+nrb boreal
+
+# Validate formatting, show diff, then apply
+nship boreal
+
+# Test without making it the default generation
+nrt boreal-tty
+```
+
+<Warning>
+  `switch` makes the new configuration the default boot generation. Use `test` first if you are uncertain about a change — it activates immediately but reverts on reboot.
+</Warning>
+
+## Local apply — nix-darwin
+
+| Command | What it does |
+| --- | --- |
+| `ndrs [output]` | `nh darwin switch . -H <output>` — default output is `macbook` |
+| `ndrb [output]` | `nh darwin build . -H <output>` — default output is `macbook` |
+
+```bash
+ndrs           # switch macbook (default)
+ndrs macbook   # same, explicit
+ndrb macbook   # build only
+```
+
+## Local apply — Home Manager
+
+| Command | What it does |
+| --- | --- |
+| `nhms [output]` | `nh home switch . -c <output>` — default output is `fedora-mac` |
+| `nhmb [output]` | `nh home build . -c <output>` — default output is `fedora-mac` |
+
+```bash
+nhms             # switch fedora-mac (default)
+nhms jetson      # switch a different standalone HM output
+nhmb fedora-mac  # build only
+```
+
+## Remote deploy
+
+The remote helpers are NixOS-only and cover three deployment models. See the [remote deploy guide](/guides/remote-deploy) for a full explanation of when to use each model.
+
+### Build on the target host
+
+The target machine does its own build. Use this when the remote host has good access to Nix caches and enough resources to build.
+
+| Command | What it does |
+| --- | --- |
+| `nremote-build <output> <target-host>` | Ask the target to build the output — no activation |
+| `nremote-test <output> <target-host>` | Build on the target and activate with `test` |
+| `nremote-switch <output> <target-host>` | Build on the target and fully switch |
+
+```bash
+nremote-build rpi4-tty gars@rpi4.local
+nremote-test  rpi4-tty gars@rpi4.local
+```
+
+### Build locally, send the closure to the target
+
+Your current machine builds; the target only receives and optionally activates.
+
+| Command | What it does |
+| --- | --- |
+| `ncopy <output> <ssh-host>` | Build locally if needed, copy the output closure to the target |
+| `ncopy-test <output> <target-host>` | Build locally, copy, then activate with `test` on the target |
+| `ncopy-switch <output> <target-host>` | Build locally, copy, set the system profile, and fully switch |
+| `ncopy-activate <output> <target-host>` | Alias for `ncopy-test` |
+
+```bash
+# Safe incremental pattern
+nrb rpi4-tty                         # prove it builds locally
+ncopy rpi4-tty gars@rpi4.local       # send the closure
+ncopy-test rpi4-tty gars@rpi4.local  # activate on the target
+
+# Or in one step when you're confident
+ncopy-switch rpi4-tty gars@rpi4.local
+```
+
+### Build on one host, deploy to another
+
+Your current shell orchestrates; a separate build host compiles; the target receives the result.
+
+| Command | What it does |
+| --- | --- |
+| `nboh <output> <build-host> <target-host> [build\|test\|switch]` | Use `nixos-rebuild --build-host ... --target-host ...`; action defaults to `build` |
+| `nship-remote <output> <build-host> <target-host>` | Shortcut for `nboh ... switch` |
+
+```bash
+nboh rpi4-sway localhost gars@rpi4.local build   # build only
+nboh rpi4-sway localhost gars@rpi4.local test    # build and test
+nship-remote rpi4-sway localhost gars@rpi4.local # build and switch
+```
+
+<Tip>
+  For slow or fragile targets, always prefer `build` or `test` before committing to `switch`. Once a generation is set as the boot default, rolling back requires another rebuild or a manual boot menu selection.
+</Tip>

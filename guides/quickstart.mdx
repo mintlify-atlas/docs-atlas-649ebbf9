@@ -1,0 +1,130 @@
+---
+title: "Get started with NixOS Config"
+description: "Clone the repo, validate it with ncheck, build an existing output with nrb, and apply the result with nr, ndrs, or nhms — no guesswork."
+---
+
+The fastest path to a working system is to build an output that already exists in the flake, confirm it evaluates cleanly, and switch to it. This guide walks you through those steps using the shell helpers defined in `modules/home/nix-workflows.nix`. If you are on a fresh machine and need to get those helpers available first, apply any existing output and the helper surface will be present in your shell from that point on.
+
+## Available outputs
+
+The flake currently defines eight outputs across three platforms. Use `nout` to list them grouped by type at any time:
+
+```bash
+nout
+```
+
+You can also filter by platform:
+
+| Command  | Lists                              |
+| -------- | ---------------------------------- |
+| `noutn`  | NixOS outputs only                 |
+| `noutd`  | nix-darwin outputs only            |
+| `nouth`  | Standalone Home Manager only       |
+| `nshow <output>` | Output type and installable path |
+
+The current outputs are:
+
+| Output       | Type         | Purpose                                               |
+| ------------ | ------------ | ----------------------------------------------------- |
+| `boreal-tty` | NixOS        | CLI/server profile on boreal with AI CLI overlays     |
+| `boreal`     | NixOS        | Full Sway desktop with gaming and AI CLI              |
+| `nixos-vm`   | NixOS        | Minimal VM profile                                    |
+| `rpi4-tty`   | NixOS        | Raspberry Pi 4 TTY profile                            |
+| `rpi4-sway`  | NixOS        | Raspberry Pi 4 Sway profile (lean ARM variant)        |
+| `macbook`    | nix-darwin   | Apple Silicon nix-darwin host with AI CLI overlay     |
+| `fedora-mac` | Home Manager | Standalone Home Manager for Fedora on Apple Silicon   |
+| `jetson`     | Home Manager | Standalone Home Manager for Jetson Orin Nano          |
+
+## Steps
+
+<Steps>
+  <Step title="Clone the repo and enter it">
+    Clone the repository and change into it. The helpers expect to run from the repo root.
+
+    ```bash
+    git clone <your-remote-url> nixos-config
+    cd nixos-config
+    ```
+
+    The `my.repoRoot` option in each user module points to this directory. If you clone to a non-standard path, update `my.repoRoot` in your user module accordingly.
+  </Step>
+
+  <Step title="Validate with ncheck">
+    Run the fast validation set before building anything. This checks formatting and evaluates the flake:
+
+    ```bash
+    ncheck
+    ```
+
+    `ncheck` runs `alejandra --check` followed by `nix flake check`. Fix any reported issues before proceeding. If the repo is in a known-good state this should pass immediately.
+  </Step>
+
+  <Step title="Build an output with nrb">
+    Build the output for your machine without applying it. This confirms the output evaluates and produces a valid system closure:
+
+    ```bash
+    nrb boreal
+    ```
+
+    Replace `boreal` with the output name that matches your machine. The build runs on the current host — see the [shell helpers reference](/reference/shell-helpers) for cross-arch and remote build options.
+
+    For a quick dry-run that also shows what would change:
+
+    ```bash
+    nrd boreal
+    ```
+  </Step>
+
+  <Step title="Apply with nr, ndrs, or nhms">
+    Once the build succeeds, apply the configuration. The command depends on the output type.
+
+    **NixOS:**
+
+    ```bash
+    nr boreal
+    ```
+
+    `nr <output>` runs `nh os switch . -H <output>`. It validates the output name against the live flake, shows a diff of what changed via `nvd`, then activates the configuration and sets it as the default boot generation.
+
+    **nix-darwin:**
+
+    ```bash
+    ndrs
+    ```
+
+    `ndrs` defaults to the `macbook` output. Pass an explicit output name to override: `ndrs macbook`.
+
+    **Standalone Home Manager:**
+
+    ```bash
+    nhms
+    ```
+
+    `nhms` defaults to `fedora-mac`. Pass an output name to switch a different one: `nhms jetson`.
+  </Step>
+</Steps>
+
+<Tip>
+Run `ncheck-full` before committing any change. It extends `ncheck` with a full evaluation of all output families and optionally runs `deadnix` and `statix` if those commands are installed. Catching issues here prevents broken outputs from reaching other machines.
+
+```bash
+ncheck-full
+```
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Add a host" icon="server" href="/guides/adding-a-host">
+    Register a new machine in flake.nix and wire up its system and home profiles
+  </Card>
+  <Card title="Add a user" icon="user" href="/guides/adding-a-user">
+    Create a user module and reference it from one or more outputs
+  </Card>
+  <Card title="Add packages" icon="box" href="/guides/adding-packages">
+    Place CLI, desktop, and system packages in the right module layer
+  </Card>
+  <Card title="Shell helpers reference" icon="terminal" href="/reference/shell-helpers">
+    Full nr, nrb, ncopy, nboh, and maintenance command reference
+  </Card>
+</CardGroup>

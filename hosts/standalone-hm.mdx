@@ -1,0 +1,195 @@
+---
+title: "Standalone Home Manager: fedora-mac and jetson"
+description: "Home Manager on non-NixOS Linux — Fedora on Asahi Linux and Jetson Orin Nano on Ubuntu, where NVIDIA drivers require config-only packages."
+---
+
+Two hosts run standalone Home Manager on Linux distributions that are not managed by NixOS: `fedora-mac` (Fedora on Apple Silicon via Asahi Linux) and `jetson` (Ubuntu on Jetson Orin Nano with JetPack). Both use the `aarch64-linux` system and apply a `sway`-family home profile, but they differ significantly in what Nix can manage — particularly on the Jetson, where proprietary NVIDIA drivers prevent nix-built GUI apps from running.
+
+## Outputs
+
+| Output | User | Home profile | System |
+| --- | --- | --- | --- |
+| `fedora-mac` | `htmlgxn` | `sway` | aarch64-linux |
+| `jetson` | `gars` | `sway-config` | aarch64-linux |
+
+Apply:
+
+```bash
+nhms              # nh home switch . -c fedora-mac (default)
+nhms jetson       # nh home switch . -c jetson
+```
+
+Or directly:
+
+```bash
+nh home switch . -c fedora-mac
+nh home switch . -c jetson
+```
+
+## Nix cache configuration
+
+On NixOS hosts, binary cache substituters and trusted public keys are configured automatically by `parts/lib.nix`. On standalone Home Manager hosts, you must add them manually to `/etc/nix/nix.conf` — otherwise Nix will compile everything from source:
+
+```ini
+substituters = https://cache.nixos.org/ https://nix-community.cachix.org https://yazi.cachix.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=
+```
+
+After saving, restart the daemon:
+
+```bash
+sudo systemctl restart nix-daemon.service
+```
+
+<Note>
+  On Fedora, the nix-daemon systemd unit files may not be present in `/etc/systemd/system/` after initial Nix installation. Copy them from `/nix/var/nix/profiles/default/lib/systemd/system/` if the restart fails.
+</Note>
+
+See [standalone Home Manager setup](/guides/standalone-hm-setup) for the full prerequisites guide, including all required system packages and greetd configuration.
+
+---
+
+## fedora-mac
+
+`fedora-mac` runs Fedora on Apple Silicon hardware via Asahi Linux. It uses the full `sway` home profile, meaning Home Manager installs Sway, Waybar, swaylock, fuzzel, mako, and the rest of the desktop layer as nix packages.
+
+### Host module
+
+`hosts/fedora-mac/home.nix` is minimal — it adds the `nrs` shell alias for both bash and nushell, pointing at the fedora-mac output:
+
+```nix
+programs.bash.shellAliases.nrs =
+  "nh home switch -b bak ${config.my.repoRoot} -c fedora-mac";
+```
+
+The `-b bak` flag tells `nh` to keep a backup generation before switching.
+
+### System prerequisites
+
+Before switching to the `sway` home profile, the host OS must provide:
+
+- `sway` (system package with setuid/capability wrappers for DRM access)
+- `greetd` + `tuigreet` (login manager to launch sway)
+- `polkit`, `rtkit` (privilege escalation and realtime scheduling)
+- `gnome-keyring` with PAM integration
+- `xdg-desktop-portal-wlr` + `xdg-desktop-portal-gtk`
+- `PipeWire` + `wireplumber`
+- System fonts: Roboto Mono, JetBrains Mono Nerd Font, OpenMoji Color
+- `/etc/pam.d/swaylock` with `auth include login`
+
+Install on Fedora:
+
+```bash
+sudo dnf install sway wayland xorg-x11-server-Xwayland
+sudo dnf install greetd greetd-tuigreet
+sudo systemctl enable greetd
+sudo dnf install xdg-desktop-portal-wlr xdg-desktop-portal-gtk dconf
+sudo dnf install polkit rtkit gnome-keyring
+sudo dnf install pipewire pipewire-pulseaudio wireplumber
+echo 'GTK_THEME=Adwaita-dark' | sudo tee -a /etc/environment
+sudo tee /etc/pam.d/swaylock <<'EOF'
+auth    include login
+EOF
+```
+
+Configure greetd to launch sway (`/etc/greetd/config.toml`):
+
+```toml
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --cmd sway"
+user = "greeter"
+```
+
+---
+
+## jetson
+
+`jetson` runs Ubuntu (JetPack) on a Jetson Orin Nano. The proprietary NVIDIA tegra drivers are incompatible with nix-built GUI applications — nix packages link against nix's mesa/EGL, which cannot access the Jetson's NVIDIA libraries. nixGL also fails on the Jetson's non-standard driver layout.
+
+The `sway-config` home profile addresses this: Home Manager generates all configuration files (sway, kitty, waybar, fuzzel, mako, shell, starship, neovim) but sets `package = null` on every GUI package. The binaries themselves are installed via `apt`.
+
+### What Home Manager manages on jetson
+
+- All dotfiles and configuration files
+- Shell (bash + nushell), starship prompt, neovim
+- CLI tools that link cleanly against glibc
+
+### What apt must provide
+
+Install the Sway ecosystem and GUI apps via apt:
+
+```bash
+sudo apt install sway swaybg swaylock swayidle wlsunset wl-clipboard grim
+sudo apt install fuzzel waybar mako-notifier
+sudo apt install kitty thunar pavucontrol brightnessctl
+sudo apt install policykit-1-gnome network-manager-gnome mpv
+```
+
+For Brave, LibreWolf, Obsidian, and Signal, use their official repositories or `.deb` packages.
+
+### Kernel module setup (once)
+
+```bash
+echo nvidia-drm | sudo tee /etc/modules-load.d/nvidia-drm.conf
+echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf
+```
+
+### Host module
+
+`hosts/jetson/home.nix` configures the Jetson-specific environment:
+
+- `targets.genericLinux.enable = true` — required for standalone HM on non-NixOS
+- `wayland.windowManager.sway.package = null` — suppresses nix-built sway binary
+- `my.terminal = "foot"` — uses system foot, not the nix package
+- `home.pointerCursor.name = lib.mkForce "catppuccin-mocha-yellow-cursors"` — lowercase cursor directory name for generic-Linux compatibility
+
+**Environment variables** set in `home.sessionVariables`:
+
+| Variable | Value | Purpose |
+| --- | --- | --- |
+| `CUDA_PATH` | `/usr/local/cuda` | Points compute workloads at the JetPack CUDA install |
+| `WLR_NO_HARDWARE_CURSORS` | `1` | Required for NVIDIA proprietary drivers under wlroots |
+| `XCURSOR_PATH` | `~/.nix-profile/share/icons:...` | Ensures cursor theme is found on non-NixOS |
+
+**Shell aliases**: `sway` maps to `sway --unsupported-gpu` (sway does not officially support proprietary NVIDIA). `nrs` switches to the jetson output.
+
+**PATH setup** — nushell can't source bash scripts, so `programs.nushell.extraEnv` prepends nix profile paths, CUDA, cargo, nvm, and `.local/bin` explicitly.
+
+### Starting sway without greetd
+
+`greetd` is not in Ubuntu's package repositories. The simplest approach is to auto-start sway from TTY1 using a flag file to prevent a relaunch loop if sway exits.
+
+**Via bash** — add to `programs.bash.profileExtra` in your home configuration:
+
+```nix
+programs.bash.profileExtra = ''
+  if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ] && [ ! -f /tmp/.sway-exited ]; then
+      touch /tmp/.sway-exited
+      exec sway
+  fi
+'';
+```
+
+**Via nushell** — add to `programs.nushell.extraLogin`:
+
+```nix
+programs.nushell.extraLogin = ''
+  if ($env.WAYLAND_DISPLAY? | is-empty) and ((tty) == "/dev/tty1") and (not ("/tmp/.sway-exited" | path exists)) {
+      touch /tmp/.sway-exited
+      exec sway
+  }
+'';
+```
+
+The flag file at `/tmp/.sway-exited` is cleared automatically on reboot since `/tmp` is tmpfs. To relaunch sway manually after it exits, delete the flag:
+
+```bash
+rm /tmp/.sway-exited
+```
+
+<Warning>
+  If sway fails to create a Wayland backend from nushell's login shell, use `exec bash -c 'exec sway'` as the launch command instead. Nushell's environment handling can interfere with Wayland compositor initialization.
+</Warning>

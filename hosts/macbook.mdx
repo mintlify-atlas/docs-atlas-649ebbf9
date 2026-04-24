@@ -1,0 +1,89 @@
+---
+title: "Macbook: Apple Silicon nix-darwin host"
+description: "nix-darwin host for Apple Silicon with AeroSpace tiling, Homebrew cask management, Touch ID sudo, and the ai overlay via the gui home profile."
+---
+
+The `macbook` host is a nix-darwin configuration for Apple Silicon. It produces one output — `macbook` — which uses the `gui` home profile and the `ai` home overlay. Unlike NixOS hosts, there is no system profile: nix-darwin manages macOS system preferences, security settings, and Homebrew cask installs declaratively via `hosts/macbook/configuration.nix`. The Home Manager layer handles the shell, dotfiles, and the AeroSpace tiling window manager.
+
+## Outputs
+
+| Output | Type | Home profile | Home overlays |
+| --- | --- | --- | --- |
+| `macbook` | nix-darwin aarch64 | `gui` | `ai` |
+
+Apply with:
+
+```bash
+ndrs           # nh darwin switch . -H macbook (shorthand)
+nh darwin switch . -H macbook
+```
+
+## System configuration
+
+`hosts/macbook/configuration.nix` manages the macOS system layer:
+
+**System preferences** — configured via `system.defaults`:
+- Dark mode (`AppleInterfaceStyle = "Dark"`)
+- Key repeat speed (initial: 15, repeat: 2)
+- Auto-hide dock, static dock entries, no magnification
+- Finder list view, path bar, status bar visible
+- Screenshots saved as PNG to `~/Pictures/screenshots` (no drop shadow)
+- Screen saver password required immediately on lock
+
+**Security**:
+- Application firewall with stealth mode enabled
+- Touch ID for `sudo` via `security.pam.services.sudo_local.touchIdAuth = true`
+- Guest login and console access disabled
+- Advertising identifiers and personalized ads disabled
+- `DSDontWriteNetworkStores` / `DSDontWriteUSBStores` to suppress `.DS_Store` on network and USB volumes
+
+**Homebrew** — managed via `homebrew.enable = true` with `onActivation.cleanup = "zap"`. GUI applications not available in nixpkgs are installed as casks:
+
+```
+cursor, freecad, protonvpn, codex, claude, kicad,
+jellyfin-media-player, zoom, background-music, calibre,
+signal, steam, orcaslicer, font-symbols-only-nerd-font, sol
+```
+
+Brews (CLI tools): `diskonaut`, `blueutil`.
+
+**Shell**: nushell is set as the login shell for `htmlgxn`. Both nushell and bash are in `environment.shells`.
+
+## Host-local Home Manager module
+
+`hosts/macbook/home.nix` is applied to the `macbook` output via `hostHomeModules` in `parts/darwin.nix`. It adds:
+
+**Nushell PATH configuration** — nix-darwin injects `PATH` via `/etc/zshenv` and `/etc/bashrc`, which nushell does not source. The module prepends the required paths explicitly in `programs.nushell.extraEnv`:
+
+```nix
+$env.PATH = ($env.PATH
+  | prepend "/etc/profiles/per-user/htmlgxn/bin"
+  | prepend "/run/current-system/sw/bin"
+  | prepend "/nix/var/nix/profiles/default/bin"
+  | prepend "/opt/homebrew/bin"
+  | prepend ($env.HOME | path join ".cargo" "bin")
+)
+```
+
+**Nushell library path** — the nushell config directory is symlinked from `~/.config/nushell` to `~/Library/Application Support/nushell/` so that Home Manager-managed config is picked up by macOS nushell.
+
+**GitHub SSH config** — an SSH match block for `github.com` adds `UseKeychain = "yes"` and `AddKeysToAgent = "yes"` with the ed25519 key, so the macOS keychain stores the passphrase.
+
+**AeroSpace tiling window manager** — configured with keybindings that mirror the Sway layout (`Alt` in place of `Mod`):
+
+- `Alt-h/j/k/l` — focus left/down/up/right
+- `Alt-Shift-h/j/k/l` — move window left/down/up/right
+- `Alt-1–9` — switch workspace; `Alt-Shift-1–9` — move window to workspace
+- `Alt-Enter` — open Kitty; `Alt-f` — fullscreen; `Alt-q` — close
+
+**Terminal**: `my.terminal = "kitty"` and `my.terminalFontSize = 14.0` — overrides the shared `foot` default.
+
+**Other additions**: `yt-dlp` in `home.packages`; `nrs` alias for both bash and nushell mapped to `nh darwin switch . -H macbook`.
+
+## Platform flag
+
+The `htmlgxn` user module sets `my.isNixOS = false`. Modules that gate Linux-only behavior (such as `lib.optionals pkgs.stdenv.isLinux`) use this alongside the stdenv platform check to skip packages and services unavailable on macOS.
+
+<Tip>
+  After running `ndrs`, macOS system preferences changes take effect the next time you open the affected app or log out. Dock and Finder changes typically require a log out or `killall Dock` / `killall Finder`.
+</Tip>

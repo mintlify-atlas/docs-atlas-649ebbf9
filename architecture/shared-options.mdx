@@ -1,0 +1,141 @@
+---
+title: "The my.* options namespace and ownership rules"
+description: "All my.* options with type, default, and purpose, plus rules for when the my.* namespace is the right tool versus a standard NixOS or Home Manager option."
+---
+
+`modules/shared/options.nix` defines a small options namespace, `my.*`, that threads repo-local values across the NixOS/Home Manager boundary. Because both the NixOS system closure and the Home Manager sub-module import this file, any option you set under `my.*` on the host side is readable by Home Manager modules, and vice versa. Use `my.*` when a value is local to this repo, reused across multiple modules, and not general enough to justify contributing a public NixOS or Home Manager option schema of its own.
+
+## When to use `my.*`
+
+Use `my.*` for values that:
+
+- need to be readable by both NixOS and Home Manager modules in the same output
+- are specific to this repo's conventions (not generic service configuration)
+- act as a single knob that multiple modules consume (e.g. `my.terminal` driving both the Sway keybinding and the application installer)
+
+Do **not** use `my.*` for:
+
+- standard NixOS service configuration — use `services.<name>.*` options directly
+- values that only one module ever reads — set them inline in that module
+- options that would be useful to any NixOS/HM user — consider upstreaming instead
+
+## How hosts set `my.*` values
+
+Each host's `configuration.nix` (or its split files) sets `my.*` values for the whole output. Home Manager modules read those values through the shared options namespace.
+
+```nix
+# hosts/boreal/services.nix (excerpt)
+{
+  my.borealHost     = "localhost";
+  my.jellyfin.vaDriver    = "radeonsi";
+  my.jellyfin.dataDir     = "/var/lib/jellyfin";
+  my.jellyfin.mediaRoots  = [ "/mnt/media/movies" "/mnt/media/shows" ];
+  my.jellyfin.transcodeSize = "8G";
+}
+```
+
+The `ai` overlay group sets `my.ollamaPackage` to `pkgs.ollama` by default. A host that needs a hardware-accelerated variant (e.g. ROCm on boreal) overrides this with `nixpkgs.lib.mkDefault` or through a dedicated nixpkgs overlay:
+
+```nix
+# In a host or overlay module
+my.ollamaPackage = pkgs.ollama-rocm;
+```
+
+## Option reference
+
+### Platform and feature flags
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `my.isNixOS` | `bool` | `true` | Whether the current output is NixOS. Set to `false` in nix-darwin and standalone HM user modules so platform-conditional code can branch correctly. |
+| `my.borealHost` | `str` | `"boreal.local"` | Hostname used to reach boreal from other machines. Set to `"localhost"` inside boreal's own configuration so SSH helpers and service URLs resolve locally. |
+| `my.dualKeyboardLayout` | `bool` | `false` | Enables the dual `us`/`graphite` keyboard layout with **Alt+Shift\_L** to switch, plus the waybar keyboard-switcher module. Set to `true` for boreal outputs. |
+| `my.showRootDisk` | `bool` | `false` | Shows root disk usage percentage in waybar. Set to `true` for boreal outputs where the root disk is worth monitoring. |
+
+### Package selection
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `my.ollamaPackage` | `nullOr package` | `null` | Selects the Ollama variant to install. Set to `pkgs.ollama-rocm` for AMD GPU acceleration, `pkgs.ollama` for CPU/generic, or `null` to skip Ollama entirely. The `ai` home overlay sets this to `pkgs.ollama` as a baseline; hosts override with the appropriate variant. |
+| `my.terminal` | `str` | `"kitty"` | Terminal emulator command used by the compositor (Sway keybinding, default terminal in application launchers). GUI outputs install and configure only the selected terminal, so changing this knob is sufficient to switch terminal emulators across the entire output. |
+| `my.terminalFontSize` | `number` | `11.0` | Font size applied to terminal emulators (kitty, xterm, etc.). |
+
+### Theming
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `my.terminalTheme` | `str` | `"gars-yellow-dark"` | Terminal color scheme name. Accepted values: `"gars-yellow-dark"`, `"gars-yellow-light"`. |
+| `my.guiTheme` | `str` | `"gars-yellow-dark"` | Theme name applied to waybar, Sway borders, mako notifications, and fuzzel launcher. Accepted values: `"gars-yellow-dark"`, `"gars-yellow-light"`. |
+| `my.nvimTheme` | `str` | `"gars-yellow-dark"` | Neovim color theme name. Accepted values: `"gars-yellow-dark"`, `"gars-yellow-light"`. |
+| `my.wallpaper` | `path` | *(required)* | Absolute path to the wallpaper image used by `swaybg`. Set in `modules/home/users/gars/default.nix`. No default — any output using a Sway profile must supply this. |
+
+### Paths
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `my.primaryUser` | `str` | *(required)* | Primary interactive user for this output. Used by storage mount ownership rules in `hosts/boreal/storage.nix` and anywhere else that needs a user name without hardcoding `"gars"`. No default — every host must set this. |
+| `my.repoRoot` | `str` | *(required)* | Absolute path to the `nixos-config` checkout on disk. Used by shell helpers and container workspace references. |
+| `my.containersRoot` | `str` | *(required)* | Absolute path to the repo-managed containers workspace (typically `${my.repoRoot}/containers`). Used by container shell helpers and Quadlet service definitions. |
+
+### Jellyfin service values
+
+These options are read by `modules/system/jellyfin.nix`. They have safe defaults so shared or HM-only targets (where Jellyfin is not running) can evaluate without requiring host-level Jellyfin values.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `my.jellyfin.vaDriver` | `str` | `""` | VAAPI driver name (e.g. `"radeonsi"`). An empty string skips the driver override. |
+| `my.jellyfin.dataDir` | `str` | `""` | Persistent Jellyfin data directory. `jellyfin.nix` creates `config`, `cache`, `data`, and `log` subdirectories under this path in `preStart`. |
+| `my.jellyfin.mediaRoots` | `listOf str` | `[]` | Directories Jellyfin needs ACL access to. `jellyfin.nix` applies ACLs to every path in this list. |
+| `my.jellyfin.transcodeSize` | `str` | `"4G"` | `tmpfs` size limit for the Jellyfin transcode directory. |
+
+### BorgBackup service values
+
+These options are read by `modules/system/borg.nix`. All have safe empty defaults.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `my.borg.repoPath` | `str` | `""` | Absolute path to the Borg repository (e.g. `/mnt/archive/backup/gars`). |
+| `my.borg.paths` | `listOf str` | `[]` | Directories to include in backups (e.g. `["/home/gars/dev" "/home/gars/documents"]`). |
+| `my.borg.exclude` | `listOf str` | `[]` | Glob patterns to exclude (e.g. `["*/node_modules" "*/.direnv"]`). |
+| `my.borg.startAt` | `str` | `"daily"` | systemd calendar expression for backup schedule. Accepts any value valid for `systemd.services.<name>.startAt`. |
+| `my.borg.keep.daily` | `int` | `14` | Number of daily archives to keep. |
+| `my.borg.keep.weekly` | `int` | `8` | Number of weekly archives to keep. |
+| `my.borg.keep.monthly` | `int` | `12` | Number of monthly archives to keep. |
+| `my.borg.keep.yearly` | `int` | `5` | Number of yearly archives to keep. |
+
+## Full option source
+
+All options are declared in `modules/shared/options.nix`. The file is imported by both `sharedSystemModules` (NixOS) and `sharedHomeModules` (Home Manager), so option declarations and set values are always in scope on both sides of the boundary.
+
+```nix
+# modules/shared/options.nix (abridged)
+{ lib, ... }: let
+  inherit (lib) mkOption types;
+in {
+  options.my = {
+    borealHost      = mkOption { type = types.str; default = "boreal.local"; };
+    ollamaPackage   = mkOption { type = types.nullOr types.package; default = null; };
+    terminal        = mkOption { type = types.str; default = "kitty"; };
+    terminalFontSize = mkOption { type = types.number; default = 11.0; };
+    dualKeyboardLayout = mkOption { type = types.bool; default = false; };
+    showRootDisk    = mkOption { type = types.bool; default = false; };
+    wallpaper       = mkOption { type = types.path; };
+    primaryUser     = mkOption { type = types.str; };
+    repoRoot        = mkOption { type = types.str; };
+    containersRoot  = mkOption { type = types.str; };
+    terminalTheme   = mkOption { type = types.str; default = "gars-yellow-dark"; };
+    guiTheme        = mkOption { type = types.str; default = "gars-yellow-dark"; };
+    nvimTheme       = mkOption { type = types.str; default = "gars-yellow-dark"; };
+    borg            = { /* repoPath, paths, exclude, startAt, keep.* */ };
+    jellyfin        = { /* vaDriver, dataDir, mediaRoots, transcodeSize */ };
+  };
+}
+```
+
+<Tip>
+`my.terminal` is the single terminal-selection knob for GUI outputs. If you want to switch from `kitty` to another terminal emulator, set `my.terminal` in the relevant host or home user module — shared GUI layers read this value and install and configure only the selected terminal.
+</Tip>
+
+<Note>
+`my.jellyfin.dataDir` and `my.jellyfin.mediaRoots` intentionally default to empty values. This means HM-only outputs (e.g. `fedora-mac`, `jetson`) can evaluate cleanly even though they do not run the Jellyfin system service.
+</Note>

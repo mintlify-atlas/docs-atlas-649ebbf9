@@ -1,0 +1,156 @@
+---
+title: "Add a new user to the flake configuration"
+description: "Create a user module under modules/home/users/, import the shared shell and SSH baseline, set my.* paths, and register the user in parts/lib.nix."
+---
+
+User definitions in this repo are Home Manager modules. Each user module sets the username, home directory, and repo-local `my.*` values, then imports `modules/home/users/common.nix` for the shared shell, editor, SSH, and theme baseline. The user is registered in the `users` attrset in `parts/lib.nix` by a short descriptor, and referenced by name from one or more output definitions. Keeping user logic inside the user module — rather than scattering it across host files or output definitions — is what keeps the composition model legible.
+
+<Warning>
+User modules should describe the user, not silently expand unrelated outputs. If behavior is optional, reusable, or output-specific, model it as an explicit home overlay group in `parts/lib.nix` instead of importing it unconditionally from the user module.
+</Warning>
+
+## Steps
+
+<Steps>
+  <Step title="Create the user module">
+    Create `modules/home/users/<username>.nix`. For a simple user this is a single file. For a more complex user with shared assets (wallpapers, dotfiles), use a directory module at `modules/home/users/<username>/default.nix` — that is how the `gars` user is structured.
+
+    A minimal user module looks like this:
+
+    ```nix
+    # modules/home/users/myuser.nix
+    {
+      config,
+      lib,
+      ...
+    }: let
+      userName = "myuser";
+    in {
+      imports = [./common.nix];
+
+      my = {
+        primaryUser = userName;
+        repoRoot = "${config.home.homeDirectory}/nixos-config";
+        containersRoot = "${config.home.homeDirectory}/nixos-config/containers";
+      };
+
+      home = {
+        username = userName;
+        homeDirectory = lib.mkDefault "/home/${userName}";
+        stateVersion = "26.05";
+      };
+    }
+    ```
+
+    The `htmlgxn` user follows this same pattern for the macOS and Fedora hosts. The `gars` user adds user-specific packages and assets in `modules/home/users/gars/default.nix`.
+  </Step>
+
+  <Step title="Import common.nix for the shared baseline">
+    `modules/home/users/common.nix` provides:
+
+    - Nushell, Bash, and Starship configuration via `../nushell.nix`, `../bash.nix`, and `../starship.nix`
+    - The full Nix helper shell surface from `../nix-workflows.nix` (`nr`, `nrb`, `ncheck`, `nout`, and all other helpers)
+    - XDG user directories
+    - Git identity (name and email)
+    - SSH client configuration with shared host blocks
+    - An activation script that generates an ed25519 SSH key if none exists
+
+    Import it at the top of your user module:
+
+    ```nix
+    imports = [./common.nix];
+    ```
+
+    If the user needs different shell or editor behavior, set options after the import. The `my.terminalTheme`, `my.guiTheme`, and `my.nvimTheme` options from `modules/shared/options.nix` are the preferred knobs for theme selection.
+  </Step>
+
+  <Step title="Set my.repoRoot and my.containersRoot">
+    These two paths tell the helpers where to find the repo and the container workspace. Set them using the home directory:
+
+    ```nix
+    my = {
+      repoRoot = "${config.home.homeDirectory}/nixos-config";
+      containersRoot = "${config.home.homeDirectory}/nixos-config/containers";
+    };
+    ```
+
+    `my.repoRoot` is used by `programs.nh.flake` in `cli-base-apps.nix` and by the shell helper wrappers in `nix-workflows.nix`. If your repo lives at a non-standard path, adjust accordingly.
+  </Step>
+
+  <Step title="Set my.isNixOS = false for non-NixOS hosts">
+    `my.isNixOS` defaults to `true`. Set it to `false` in user modules intended for nix-darwin or standalone Home Manager outputs:
+
+    ```nix
+    my.isNixOS = false;
+    ```
+
+    Several shared modules check this option to skip NixOS-only behavior. The `htmlgxn` user module sets `my.isNixOS = false` because it is used only on macOS and Fedora targets.
+  </Step>
+
+  <Step title="Register the user in parts/lib.nix">
+    Open `parts/lib.nix` and add a short descriptor to the `users` attrset:
+
+    ```nix
+    users = {
+      # ... existing users ...
+      myuser = {module = self + /modules/home/users/myuser.nix;};
+    };
+    ```
+
+    For a directory module:
+
+    ```nix
+    myuser = {module = self + /modules/home/users/myuser;};
+    ```
+  </Step>
+
+  <Step title="Reference the user from output definitions">
+    Add `userName = "myuser"` to one or more output definitions in `parts/nixos.nix`, `parts/darwin.nix`, or `parts/home.nix`:
+
+    ```nix
+    mynewhost-tty = {
+      hostName = "mynewhost";
+      userName = "myuser";
+      systemProfile = "tty";
+      homeProfile = "cli";
+      homeOverlays = [];
+    };
+    ```
+
+    A single user can appear in multiple outputs — for example, `gars` appears in all NixOS outputs. Each output independently selects the system profile, home profile, and overlays; the user module itself stays output-neutral.
+  </Step>
+</Steps>
+
+## User modules vs home overlay groups
+
+The distinction matters for keeping outputs composable:
+
+**User module** (`modules/home/users/<username>.nix`):
+- Sets identity: username, home directory, `my.primaryUser`
+- Sets repo-local paths: `my.repoRoot`, `my.containersRoot`
+- Imports the shared baseline from `common.nix`
+- Adds user-specific packages or dotfiles that apply to every output for that user
+
+**Home overlay group** (defined in `parts/lib.nix` under `homeOverlayGroups`, selected per-output via `homeOverlays`):
+- Contains behavior that is optional or output-specific
+- Applied only to the outputs that explicitly list the group
+- Currently: `ai` — installs claude-code, qwen-code, codex, opencode, and ollama
+
+If you find yourself wanting to gate a package or module on a flag in the user module, that is a signal the feature should be an overlay group instead. The `ai` overlay is the canonical example: it is included in `boreal-tty`, `boreal`, `rpi4-tty`, `rpi4-sway`, and `macbook` outputs by name, and absent from `nixos-vm`, `fedora-mac`, and `jetson` without any user module logic.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Architecture: shared options" icon="gear" href="/architecture/shared-options">
+    Full reference for the my.* options namespace
+  </Card>
+  <Card title="Add a host" icon="server" href="/guides/adding-a-host">
+    Register a new machine to pair with the new user
+  </Card>
+  <Card title="Modules: home" icon="house" href="/modules/home">
+    All shared Home Manager modules available to user outputs
+  </Card>
+  <Card title="Architecture: composition" icon="cubes" href="/architecture/composition">
+    How users, hosts, profiles, and overlay groups combine in flake.nix
+  </Card>
+</CardGroup>

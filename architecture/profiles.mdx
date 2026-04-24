@@ -1,0 +1,171 @@
+---
+title: "System and home profiles: tty, sway, sway-full, cli, gui"
+description: "Which modules each system and home profile activates, how symmetric naming keeps output descriptors readable, and where ARM profiles differ from x86_64."
+---
+
+Profiles are named lists of modules. You pick one system profile and one home profile per output, and the builder assembles the full module closure for you. System profiles control what the NixOS layer enables — the TTY baseline, the compositor, gaming support, and Flatpak. Home profiles control what Home Manager installs and configures — CLI tools, the Sway desktop setup, extra GUI applications, and gaming overlays. System and home profiles are named symmetrically so that `sway`/`sway` and `sway-full`/`sway-full` pairs are immediately legible in an output descriptor.
+
+## System profiles
+
+System profiles are defined in `parts/lib.nix` under `systemProfiles`. Every NixOS output selects exactly one. The `sharedSystemModules` baseline (Lix, `my.*` option declarations, locale, Nix settings) is always included and is not part of any named profile.
+
+| Profile | Modules activated |
+|---|---|
+| `tty` | `modules/system/cli.nix` |
+| `sway` | `modules/system/cli.nix`, `modules/system/sway.nix` |
+| `sway-full` | `modules/system/cli.nix`, `modules/system/sway.nix`, `modules/system/flatpak.nix`, `modules/system/gaming.nix` |
+
+### `tty`
+
+The minimal profile. `cli.nix` provides the shared TTY and system baseline: SSH on port 2200, Avahi mDNS for `.local` resolution, and PipeWire audio. Use `tty` for headless servers, VMs, and ARM targets that do not run a compositor.
+
+```nix
+tty = [
+  (self + /modules/system/cli.nix)
+];
+```
+
+### `sway`
+
+Adds `sway.nix` on top of the `tty` baseline. `sway.nix` enables Sway-specific system services and compositor-level packages. Use `sway` for ARM targets like the Raspberry Pi 4 where the full gaming stack is not appropriate.
+
+```nix
+sway = [
+  (self + /modules/system/cli.nix)
+  (self + /modules/system/sway.nix)
+];
+```
+
+### `sway-full`
+
+Adds Flatpak and gaming support on top of `sway`. `flatpak.nix` enables the system-level Flatpak stack; `gaming.nix` adds Steam and Proton compatibility packages. This profile assumes x86_64 and AMD graphics support (provided by `hosts/boreal/graphics.nix`). Do not use `sway-full` on ARM targets.
+
+```nix
+sway-full = [
+  (self + /modules/system/cli.nix)
+  (self + /modules/system/sway.nix)
+  (self + /modules/system/flatpak.nix)
+  (self + /modules/system/gaming.nix)
+];
+```
+
+<Note>
+`gamescope` is intentionally not part of any named profile. It is a minimal Steam-focused session separate from the full desktop path and is included via `extraSystemModules` on hosts that need it.
+</Note>
+
+### Standalone system modules
+
+These modules are not part of any named profile. Hosts include them through `extraSystemModules` in their `hosts` descriptor:
+
+| Module | Purpose |
+|---|---|
+| `modules/system/jellyfin.nix` | Jellyfin media server, parameterized by `my.jellyfin.*` |
+| `modules/system/containers.nix` | Shared Podman/Quadlet container runtime |
+| `modules/system/borg.nix` | BorgBackup service, parameterized by `my.borg.*` |
+| `modules/system/soft-serve.nix` | Soft Serve git server on ports 23231 (SSH) and 23232 (HTTP) |
+| `modules/system/gamescope.nix` | Steam/gamescope session, separate from the desktop path |
+
+## Home profiles
+
+Home profiles are defined in `parts/lib.nix` under `homeProfiles`. Every output selects exactly one. The `sharedHomeModules` baseline (`cli-base-apps`, `containers`, `fastfetch`, `nixvim`, and `modules/shared/options.nix`) is always included and is not part of any named profile.
+
+| Profile | Modules activated | Use case |
+|---|---|---|
+| `cli` | *(none beyond shared baseline)* | Headless / TTY outputs |
+| `gui` | `modules/home/gui-base-apps.nix` | macOS — desktop apps without a compositor |
+| `sway-config` | `modules/home/sway.nix` | ARM / Jetson — Sway config only, no extra apps |
+| `sway` | `modules/home/sway.nix`, `modules/home/sway-apps.nix` | Standard Sway desktop |
+| `sway-full` | `modules/home/sway.nix`, `modules/home/sway-apps.nix`, `modules/home/gui-extra-apps.nix`, `modules/home/flatpak.nix`, `modules/home/gaming.nix` | Full x86_64 desktop |
+
+### `cli`
+
+The `cli` profile adds no modules beyond the shared baseline. `cli-base-apps.nix` already provides a comprehensive set of CLI tools (with Linux-only packages guarded by `lib.optionals pkgs.stdenv.isLinux`). Use `cli` for headless or TTY outputs.
+
+```nix
+cli = [];
+```
+
+### `gui`
+
+The `gui` profile adds `gui-base-apps.nix`, which installs desktop applications that do not depend on a compositor — browsers, productivity tools, and platform-agnostic GUI apps. This is the correct profile for `macbook` (nix-darwin), where Sway cannot run.
+
+```nix
+gui = [
+  (self + /modules/home/gui-base-apps.nix)
+];
+```
+
+### `sway-config`
+
+A special-case profile for the Jetson standalone HM output. It activates `sway.nix` (Sway configuration, waybar, swaylock, fuzzel, mako, and theming) but omits `sway-apps.nix` (the heavier desktop application set). Use `sway-config` when you want the Sway environment wired up but cannot or do not want to install the full application set.
+
+```nix
+sway-config = [
+  (self + /modules/home/sway.nix)
+];
+```
+
+### `sway`
+
+The standard Sway desktop profile. `sway.nix` provides the compositor configuration and supporting tools; `sway-apps.nix` adds the Sway-appropriate application set. Use `sway` for ARM Linux targets like `rpi4-sway` and `fedora-mac` where the full gaming and Flatpak stack is not appropriate.
+
+```nix
+sway = [
+  (self + /modules/home/sway.nix)
+  (self + /modules/home/sway-apps.nix)
+];
+```
+
+### `sway-full`
+
+The complete x86_64 desktop profile. Adds extra GUI applications, the user-level Flatpak remote and installs, and the gaming layer (Steam, Heroic, MangoHud, etc.) on top of the standard Sway setup.
+
+```nix
+sway-full = [
+  (self + /modules/home/sway.nix)
+  (self + /modules/home/sway-apps.nix)
+  (self + /modules/home/gui-extra-apps.nix)
+  (self + /modules/home/flatpak.nix)
+  (self + /modules/home/gaming.nix)
+];
+```
+
+## Symmetric naming
+
+System and home profiles follow symmetric names deliberately. When you look at an output descriptor, the pair `systemProfile = "sway-full"; homeProfile = "sway-full"` immediately tells you both layers are in full desktop configuration. The one intentional asymmetry is the `gui` home profile, which exists for macOS outputs where there is no matching system profile because nix-darwin does not manage a compositor.
+
+```nix
+# boreal — full x86_64 desktop, symmetric pair
+boreal = {
+  systemProfile = "sway-full";
+  homeProfile   = "sway-full";
+};
+
+# rpi4-sway — ARM desktop, symmetric pair
+rpi4-sway = {
+  systemProfile = "sway";
+  homeProfile   = "sway";
+};
+
+# boreal-tty — headless, symmetric pair
+boreal-tty = {
+  systemProfile = "tty";
+  homeProfile   = "cli";
+};
+
+# macbook — nix-darwin, gui home profile (no system compositor)
+macbook = {
+  homeProfile = "gui";
+};
+```
+
+## ARM profile differences
+
+ARM targets (`rpi4`, `jetson`, `fedora-mac`) omit several features that are either unavailable or impractical on those platforms:
+
+- No `sway-full` system profile: `flatpak.nix` and `gaming.nix` are not included
+- No `sway-full` home profile: `gui-extra-apps.nix`, `flatpak.nix`, and `gaming.nix` are omitted
+- The `rpi4` host uses the `sway` profile pair, which gives a working compositor without the heavy extras
+- The `jetson` standalone HM output uses `sway-config`, which configures Sway but skips the application set entirely
+
+`gui-base-apps.nix` and `gui-extra-apps.nix` both use `lib.optionals pkgs.stdenv.isLinux` for Linux-only packages (e.g. `freecad`, `libreoffice-fresh`), so macOS targets using the `gui` profile evaluate cleanly.

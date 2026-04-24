@@ -1,0 +1,155 @@
+---
+title: "Apply NixOS, Darwin, and Home Manager locally"
+description: "Run build, test, and switch operations for NixOS, nix-darwin, and standalone Home Manager outputs using the nh-backed shell helpers."
+---
+
+The local apply helpers in `modules/home/nix-workflows.nix` wrap `nh` with output validation so every rebuild starts from a known-good state. Before running any apply command, each helper checks the output name against the live flake — if you typo an output name, the command fails before invoking `nh`. All three platforms share the same pattern: build to verify, optionally test to activate without committing, then switch to make the change permanent.
+
+## NixOS
+
+NixOS apply commands target outputs listed under `nixosConfigurations` in the flake. The current NixOS outputs are `boreal-tty`, `boreal`, `nixos-vm`, `rpi4-tty`, and `rpi4-sway`.
+
+### Core commands
+
+| Command | Underlying call | Effect |
+|---|---|---|
+| `nrb <output>` | `nh os build . -H <output>` | Build only — no activation |
+| `nrt <output>` | `nh os test . -H <output>` | Activate until next reboot, no new boot entry |
+| `nrd <output>` | `nh os build -d . -H <output>` | Dry-run diff, shows what would change |
+| `nr <output>` | `nh os switch . -H <output>` | Full switch — activate and set as default boot generation |
+
+```bash
+# Build boreal without switching
+nrb boreal
+
+# Test the config on boreal — activates but won't survive a reboot
+nrt boreal
+
+# Preview what the next switch would change
+nrd boreal
+
+# Switch boreal to the new generation
+nr boreal
+```
+
+<Note>
+  `nrs` and `nrtty` are convenience aliases that hardcode the `boreal` and `boreal-tty` outputs respectively. They run the same `nh os switch` call as `nr boreal` / `nr boreal-tty`.
+</Note>
+
+### Convenience sequences
+
+Two higher-level commands combine validation and apply in a single step:
+
+**`npre <output>`** runs a formatting check (`fnixc`) followed by a dry-run diff (`nrd`). Use it after editing a module to confirm the change evaluates and looks correct before committing to a switch.
+
+**`nship <output>`** runs `npre` first and, if it passes, proceeds to `nr`. Use this when you want a single command that validates then applies.
+
+```bash
+# After editing a module, confirm it evaluates and inspect the diff
+npre boreal
+
+# Validate then switch in one step
+nship boreal
+```
+
+<Warning>
+  `nrb` builds the output on the machine where you run the command. The `-H <output>` flag selects which flake output to evaluate — it does not cause the build to run on that host. See [remote deployment](/guides/remote-deploy) if you need to build or activate on a different machine.
+</Warning>
+
+## nix-darwin
+
+nix-darwin commands target outputs listed under `darwinConfigurations`. The current darwin output is `macbook`.
+
+| Command | Underlying call | Effect |
+|---|---|---|
+| `ndrb [output]` | `nh darwin build . -H <output>` | Build only — no activation |
+| `ndrs [output]` | `nh darwin switch . -H <output>` | Full switch |
+
+The `[output]` argument defaults to `macbook` if omitted.
+
+```bash
+# Build macbook without switching
+ndrb
+
+# Switch macbook to the new generation
+ndrs
+
+# Explicitly pass the output name
+ndrs macbook
+```
+
+<Tip>
+  There is no `test` mode for nix-darwin — `ndrs` always runs a full switch. Build first with `ndrb` to confirm the output evaluates before switching.
+</Tip>
+
+## Standalone Home Manager
+
+Standalone Home Manager commands target outputs listed under `homeConfigurations`. The current outputs are `fedora-mac` and `jetson`.
+
+| Command | Underlying call | Effect |
+|---|---|---|
+| `nhmb [output]` | `nh home build . -c <output>` | Build only — no activation |
+| `nhms [output]` | `nh home switch . -c <output>` | Full switch |
+
+The `[output]` argument defaults to `fedora-mac` if omitted.
+
+```bash
+# Build fedora-mac without switching
+nhmb
+
+# Switch fedora-mac to the new generation
+nhms
+
+# Switch the jetson output explicitly
+nhms jetson
+```
+
+<Note>
+  Standalone Home Manager outputs do not use `-H` like the NixOS and darwin helpers — they use `-c` to select the `homeConfigurations` key. The helpers handle this automatically.
+</Note>
+
+## Choosing between build, test, and switch
+
+| Action | Persists after reboot? | Sets default boot entry? | When to use |
+|---|---|---|---|
+| **build** | — | No | Confirm the output evaluates before activating |
+| **test** | No | No | Try a change live without risking a broken boot |
+| **switch** | Yes | Yes | Commit the change as the new system state |
+
+For NixOS, the recommended pattern for any non-trivial change is:
+
+<Steps>
+  <Step title="Run a dry-run diff">
+    ```bash
+    nrd boreal
+    ```
+    Confirm the diff shows only expected changes.
+  </Step>
+  <Step title="Build to verify">
+    ```bash
+    nrb boreal
+    ```
+    Catch any build errors without activating anything.
+  </Step>
+  <Step title="Test before committing">
+    ```bash
+    nrt boreal
+    ```
+    Activate the config. If something is wrong, rebooting reverts to the previous generation.
+  </Step>
+  <Step title="Switch when satisfied">
+    ```bash
+    nr boreal
+    ```
+    Make the new generation the default boot entry.
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Remote deployment" icon="server" href="/guides/remote-deploy">
+    Build on one host and deploy to another
+  </Card>
+  <Card title="Standalone HM setup" icon="laptop" href="/guides/standalone-hm-setup">
+    Prerequisites for Fedora and Jetson
+  </Card>
+</CardGroup>

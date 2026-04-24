@@ -1,0 +1,257 @@
+---
+title: "Home Manager modules: user environment layers"
+description: "Reference for every Home Manager module in modules/home/: CLI tools, desktop packages, Sway config, AI tooling, containers, nix-workflows, and users/."
+---
+
+Home Manager modules live in `modules/home/` and always evaluate in Home Manager context. They install user packages, configure programs, manage dotfiles, and define shell aliases. You include them through `homeProfiles` entries in `flake.nix` or through `extraHomeModules` on a host descriptor.
+
+## cli-base-apps.nix
+
+`modules/home/cli-base-apps.nix` is the shared CLI package baseline included in every output. It installs the full set of terminal tools used across all platforms, with Linux-only packages gated behind `lib.optionals pkgs.stdenv.isLinux` to keep the module safe for macOS and standalone Home Manager targets.
+
+The module also configures three programs that are used everywhere:
+
+- **nh** — the Nix helper wrapper, pointed at `my.repoRoot` for flake-relative operations, with automated daily GC keeping the last 3 generations
+- **zoxide** — directory jumper with Nushell and Bash integration
+- **yazi** — file manager with the `git`, `starship`, and `jump-to-char` plugins
+
+Key package groups:
+
+| Group | Examples |
+|---|---|
+| Shell & multiplexer | `tmux`, `zellij` |
+| Nix tooling | `nix-search-tv`, `nix-tree` |
+| Neovim LSP/formatters | `nixd`, `alejandra`, `lua-language-server`, `marksman`, `prettier`, `stylua` |
+| Git | `gh`, `lazygit`, `gitui` |
+| File management | `lf`, `fd`, `ripgrep`, `bat`, `eza`, `fzf`, `television`, `yazi` |
+| System monitoring | `htop`, `btop`, `bottom`, `gdu` |
+| Networking | `rsync`, `nmap`, `wireguard-tools`, `mosh`, `k9s` |
+| Media | `ncspot`, `ffmpeg-full` |
+| Linux-only | `cava`, `powertop`, `s-tui`, `systemctl-tui`, `proton-vpn-cli` |
+
+```nix
+# modules/home/cli-base-apps.nix (excerpt)
+home.packages = with pkgs;
+  [ git wget curl tmux zellij nix-search-tv ... ]
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    cava
+    powertop
+    s-tui
+    systemctl-tui
+    proton-vpn-cli
+  ];
+```
+
+## gui-base-apps.nix
+
+`modules/home/gui-base-apps.nix` installs shared desktop applications for all `gui`/`sway` profile outputs. Like the CLI module, Linux-only apps are gated with `lib.optionals pkgs.stdenv.isLinux`.
+
+The module also configures:
+
+- **Brave** browser with a curated extension set (Bitwarden, SponsorBlock, ColorZilla, and others)
+- **Spicetify** (themed Spotify) on supported platforms (`x86_64-linux`, `x86_64-darwin`, `aarch64-darwin`) with the Catppuccin mocha theme and adblockify/shuffle extensions
+
+Package highlights:
+
+| Group | Examples |
+|---|---|
+| Media | `mpv` (no YouTube support) |
+| Messaging | `ayugram-desktop`, `vesktop` |
+| Browser | `librewolf` |
+| Notes | `obsidian` |
+| Linux-only | `signal-desktop`, `calibre-no-speech` |
+
+## sway.nix
+
+`modules/home/sway.nix` is the full Home Manager Sway configuration. It manages the entire Wayland desktop layer from user space.
+
+The module imports several sub-modules:
+
+- `gui-theme.nix` and `terminal-theme.nix` — theme data consumed by Sway colors, Waybar style, and terminal configs
+- `kitty.nix` and `foot.nix` — both terminals configured; the active terminal is selected via `my.terminal`
+- `fuzzel.nix` — application launcher
+- `mako.nix` — notification daemon
+
+What the module configures:
+
+- **Waybar** via `programs.waybar` with systemd target `sway-session.target`; bar settings come from `waybar-settings.nix`
+- **GTK and Qt theming** from `my.guiThemeData`, including cursor theme via `home.pointerCursor`
+- **Sway** itself — modifier key (`Mod4`), vim-style hjkl navigation, workspace bindings for 1–10, gaps with smart borders, no titlebars, and a full keybinding surface
+- Input layout: `us` by default, or `us,graphite` if `my.dualKeyboardLayout = true`
+- Screen lock via `swaylock`, idle management via `swayidle` (lock after 600 s, display off after 900 s)
+- Wallpaper via `swaybg -i ${config.my.wallpaper} -m fill`
+- Media key bindings for volume and brightness
+
+```nix
+# modules/home/sway.nix (excerpt)
+wayland.windowManager.sway = {
+  enable = true;
+  extraSessionCommands = ''
+    export XDG_DATA_DIRS="..."
+    ${pkgs.dbus}/bin/dbus-update-activation-environment --systemd --all
+  '';
+  config = {
+    modifier = "Mod4";
+    terminal = config.my.terminal;
+    input."*" = {
+      xkb_layout =
+        if config.my.dualKeyboardLayout
+        then "us,graphite"
+        else "us";
+      xkb_numlock = "true";
+    };
+  };
+};
+```
+
+## gaming.nix
+
+`modules/home/gaming.nix` is the user-level gaming complement to `modules/system/gaming.nix`. The system module enables Steam and Proton; this Home Manager module is the place to add user-level gaming utilities and launchers. The package list is currently empty and is extended when new tooling is needed.
+
+## ai.nix
+
+`modules/home/ai.nix` installs AI coding agents and the local inference runtime. It is included through the `ai` home overlay group rather than in a profile directly, making it opt-in per output.
+
+The module installs:
+
+- `claude-code`
+- `qwen-code`
+- `codex`
+- `opencode`
+- The package from `config.my.ollamaPackage`
+
+It sets `my.ollamaPackage = lib.mkDefault pkgs.ollama`, so outputs that do not override the option get the standard CPU/ROCm-agnostic Ollama build. Hosts can override using `mkDefault` to win over the module default:
+
+```nix
+# modules/home/ai.nix
+{config, pkgs, lib, ...}: {
+  my.ollamaPackage = lib.mkDefault pkgs.ollama;
+
+  home.packages =
+    [config.my.ollamaPackage]
+    ++ (with pkgs; [
+      claude-code
+      qwen-code
+      codex
+      opencode
+    ]);
+}
+```
+
+To use a hardware-accelerated Ollama variant, override `my.ollamaPackage` in the host Home Manager module:
+
+```nix
+# hosts/boreal/home.nix (excerpt)
+{pkgs, ...}: {
+  my.ollamaPackage = pkgs.ollama-rocm;
+}
+```
+
+Setting `my.ollamaPackage = null` skips Ollama entirely and installs only the agent CLIs.
+
+<Tip>
+The `ai` overlay is listed explicitly in the output's `homeOverlays` attrset in `flake.nix`. Check the [outputs table](/outputs) to see which outputs include it.
+</Tip>
+
+## containers.nix
+
+`modules/home/containers.nix` adds user-level container and npm workflow tooling on top of the system Podman module:
+
+- Installs `nodejs`
+- Adds shell aliases in both Bash and Nushell:
+  - `cdcont` — jump to `my.containersRoot`
+  - `cdquad` — jump to the Quadlet subdirectory
+  - `cdcomp` — jump to the Compose subdirectory
+  - `cdnpmapp` — jump to the npm apps subdirectory
+  - `pc` — shorthand for `podman compose`
+
+```nix
+# modules/home/containers.nix (excerpt)
+programs.bash.shellAliases = {
+  cdcont = "cd ${config.my.containersRoot}";
+  cdquad = "cd ${config.my.containersRoot}/quadlet";
+  cdcomp = "cd ${config.my.containersRoot}/compose";
+  cdnpmapp = "cd ${config.my.containersRoot}/npm";
+  pc = "podman compose";
+};
+```
+
+The system-level Podman daemon and OCI backend are configured separately in `modules/system/containers.nix`.
+
+## nix-workflows.nix
+
+`modules/home/nix-workflows.nix` provides the full Nix helper shell surface. It is imported by `modules/home/users/common.nix` and therefore available in every output.
+
+The module injects bash functions and aliases that wrap `nh`, `nix`, and `nix-env` for common repo operations. Key helpers:
+
+| Helper | What it does |
+|---|---|
+| `nr <output>` | `nh os switch . -H <output>` — apply NixOS configuration |
+| `nrb <output>` | `nh os build . -H <output>` — build without applying |
+| `nrt <output>` | `nh os test . -H <output>` — test without rebooting |
+| `nrd <output>` | Dry-run build with diff |
+| `ndrs [output]` | `nh darwin switch` (default: `macbook`) |
+| `nhms [output]` | `nh home switch` (default: `fedora-mac`) |
+| `ns [query]` | `nix-search-tv` through `fzf` with inline preview |
+| `ncopy <output> <host>` | Build and copy a NixOS closure to a remote host over SSH |
+| `ncopy-switch <output> <host>` | Copy and activate on the remote host |
+| `nboh <output> <build> <target>` | Build on one host, activate on another |
+| `ncheck` | Format check then `nix flake check` |
+| `ngen-all` | List system and Home Manager generations |
+| `nclean-all` | Run `nh clean all` then GC |
+| `nlock` | Show `flake.lock` diff |
+| `fnix` | Run `nix fmt` in the repo root |
+
+`nr` and `nrb` validate the requested output against the live `nixosConfigurations` attrset before running, rather than checking against a hardcoded list.
+
+See the [shell helpers reference](/reference/shell-helpers) for the complete command guide.
+
+## User modules
+
+### `users/common.nix`
+
+`modules/home/users/common.nix` is the shared user baseline imported by every user module. It sets:
+
+- **XDG user directories** — standard paths under `$HOME` created on activation
+- Default `my.terminalTheme`, `my.guiTheme`, and `my.wallpaper` values (pointing at `gars/wallpapers/default.jpg`)
+- **Git** identity (`htmlgxn` / `htmlgxn@pm.me`)
+- **SSH client config** — `serverAliveInterval`, a `boreal` block (port 2200, ed25519 key), a `soft` block (port 23231 for Soft Serve), and a `macbook` block
+- An activation script that generates `~/.ssh/id_ed25519` if it does not exist
+- Imports of `nix-workflows.nix`, `bash.nix`, `nushell.nix`, and `starship.nix`
+
+### `users/gars/`
+
+`modules/home/users/gars/` is a directory module for the primary NixOS/Linux user. `default.nix` imports `common.nix` and sets:
+
+- `my.primaryUser = "gars"`
+- `my.repoRoot = "/home/gars/nixos-config"`
+- `my.containersRoot = "/home/gars/nixos-config/containers"`
+- `home.username` and `home.homeDirectory`
+
+The directory also contains:
+
+- `wallpapers/` — wallpaper images (the default is referenced by `common.nix` as `my.wallpaper`)
+- `dots/` — any user-specific dotfile assets
+
+### `users/htmlgxn.nix`
+
+`modules/home/users/htmlgxn.nix` is the user module for the `htmlgxn` macOS and Fedora user. It imports `common.nix` and sets the same `my.*` paths relative to `config.home.homeDirectory`, which the output builder (`mkDarwinOutput` or `mkHomeOutput`) supplies.
+
+```nix
+# modules/home/users/htmlgxn.nix (excerpt)
+{config, lib, ...}: {
+  imports = [./common.nix];
+
+  my = {
+    primaryUser = "htmlgxn";
+    repoRoot = "${config.home.homeDirectory}/nixos-config";
+    containersRoot = "${config.home.homeDirectory}/nixos-config/containers";
+  };
+
+  home = {
+    username = "htmlgxn";
+    homeDirectory = lib.mkDefault "/home/htmlgxn";
+    stateVersion = "26.05";
+  };
+}
+```

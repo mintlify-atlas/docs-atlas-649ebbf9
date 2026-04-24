@@ -1,0 +1,124 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "NixOS Config",
+  "projectDescription": "A modular NixOS/nix-darwin/Home Manager flake configuration for managing multiple machines across NixOS, macOS, and standalone Linux platforms.",
+  "theme": "aspen",
+  "primaryColor": "#5277C3",
+  "lightColor": "#7B9FE0",
+  "darkColor": "#3A5BA0",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction", "outputs"]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/composition",
+              "architecture/profiles",
+              "architecture/shared-options"
+            ]
+          },
+          {
+            "group": "Hosts",
+            "pages": [
+              "hosts/overview",
+              "hosts/boreal",
+              "hosts/rpi4",
+              "hosts/macbook",
+              "hosts/standalone-hm"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "modules/overview",
+              "modules/system",
+              "modules/home",
+              "modules/services"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "guides/quickstart",
+              "guides/adding-a-host",
+              "guides/adding-a-user",
+              "guides/adding-packages"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "guides/local-apply",
+              "guides/remote-deploy",
+              "guides/standalone-hm-setup"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/shell-helpers",
+              "reference/maintenance",
+              "reference/soft-serve"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Modular flake-parts composition with explicit host, user, system profile, and home profile selectors",
+    "Multi-platform support: NixOS (x86_64 + ARM), nix-darwin (Apple Silicon), and standalone Home Manager",
+    "Layered system and home profiles (tty, sway, sway-full) for capability-oriented configuration",
+    "Shared my.* options namespace for repo-local values flowing across NixOS and Home Manager modules",
+    "AI tooling overlay with claude-code, qwen-code, codex, opencode, and ollama",
+    "Sway desktop with Waybar, swaylock, fuzzel, mako, and theming support",
+    "Self-hosted Soft Serve git server on boreal with SSH and HTTP interfaces",
+    "Jellyfin media server with declarative path and ACL management via my.jellyfin.* options",
+    "Podman-first container runtime with Quadlet, compose, and npm app scaffolding",
+    "Rich Nix helper surface (nr, nrb, ncopy, nboh) for local and remote deployment workflows"
+  ],
+  "publicApiSurface": [
+    "nixosConfigurations.boreal",
+    "nixosConfigurations.boreal-tty",
+    "nixosConfigurations.nixos-vm",
+    "nixosConfigurations.rpi4-tty",
+    "nixosConfigurations.rpi4-sway",
+    "darwinConfigurations.macbook",
+    "homeConfigurations.fedora-mac",
+    "homeConfigurations.jetson",
+    "my.isNixOS",
+    "my.ollamaPackage",
+    "my.terminal",
+    "my.dualKeyboardLayout",
+    "my.showRootDisk",
+    "my.wallpaper",
+    "my.primaryUser",
+    "my.repoRoot",
+    "my.containersRoot",
+    "my.terminalTheme",
+    "my.guiTheme",
+    "my.nvimTheme",
+    "my.jellyfin.vaDriver",
+    "my.jellyfin.dataDir",
+    "my.jellyfin.mediaRoots",
+    "my.jellyfin.transcodeSize",
+    "systemProfiles.tty",
+    "systemProfiles.sway",
+    "systemProfiles.sway-full",
+    "homeProfiles.cli",
+    "homeProfiles.gui",
+    "homeProfiles.sway",
+    "homeProfiles.sway-full"
+  ]
+}

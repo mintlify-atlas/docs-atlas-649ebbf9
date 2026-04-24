@@ -1,0 +1,193 @@
+---
+title: "Service modules: Jellyfin and Soft Serve"
+description: "Reference for jellyfin.nix and soft-serve.nix — standalone NixOS service modules driven by my.jellyfin.* options and imported directly by the host layer."
+---
+
+Two standalone NixOS service modules live in `modules/system/` and are not part of any shared profile. You include them directly in a host configuration rather than through a system profile, because they require host-specific values that make no sense as profile defaults.
+
+Both modules are currently imported by `hosts/boreal/services.nix`.
+
+## jellyfin.nix
+
+`modules/system/jellyfin.nix` enables and configures the Jellyfin media server. The module contains no hardcoded paths — every host-specific value is read from the `my.jellyfin.*` options namespace.
+
+### Options consumed
+
+| Option | Type | Description |
+|---|---|---|
+| `my.jellyfin.dataDir` | `str` | Persistent data directory for Jellyfin state |
+| `my.jellyfin.mediaRoots` | `listOf str` | Directories Jellyfin needs read access to |
+| `my.jellyfin.transcodeSize` | `str` | tmpfs size limit for the transcode directory (default `"4G"`) |
+| `my.jellyfin.vaDriver` | `str` | VAAPI driver name (e.g. `"radeonsi"`); empty string skips the override |
+
+### What the module does
+
+<Steps>
+  <Step title="Asserts dataDir is set">
+    The module asserts that `my.jellyfin.dataDir` is non-empty. Evaluation fails with a clear message if the host has not supplied the value.
+  </Step>
+  <Step title="Enables the Jellyfin service">
+    Enables `services.jellyfin` with `user = "jellyfin"`, `group = "jellyfin"`, and `dataDir` from `my.jellyfin.dataDir`. The firewall is not opened by this module — port `8096/tcp` is opened in `hosts/boreal/networking.nix`.
+  </Step>
+  <Step title="Creates data subdirectories in preStart">
+    A `preStart` script runs `install -d` to create `config/`, `cache/`, `data/`, and `log/` under `dataDir` with correct ownership before the service starts.
+  </Step>
+  <Step title="Mounts a tmpfs transcode directory">
+    A systemd mount unit mounts a tmpfs at `/var/lib/jellyfin/transcodes` with the size from `my.jellyfin.transcodeSize`. The transcode directory is RAM-backed and does not persist across reboots.
+  </Step>
+  <Step title="Applies ACLs to media roots">
+    `systemd.tmpfiles.rules` entries grant the `jellyfin` user recursive read-execute access (`u:jellyfin:rx` and default ACL `d:u:jellyfin:rx`) to every path in `my.jellyfin.mediaRoots`.
+  </Step>
+  <Step title="Requires mount points">
+    `unitConfig.RequiresMountsFor` lists `dataDir` and every path in `mediaRoots`, so systemd will not start Jellyfin until all required mounts are present.
+  </Step>
+  <Step title="Sets the VAAPI driver">
+    If `my.jellyfin.vaDriver` is non-empty, the module sets `LIBVA_DRIVER_NAME` in the Jellyfin service environment for hardware-accelerated transcoding.
+  </Step>
+</Steps>
+
+### Source overview
+
+```nix
+# modules/system/jellyfin.nix (condensed)
+{config, pkgs, lib, ...}: let
+  jellyfinCfg = config.my.jellyfin;
+  aclRules = lib.concatMap (path: [
+    "A ${path} - - - - u:jellyfin:rx"
+    "A ${path} - - - - d:u:jellyfin:rx"
+  ]) jellyfinCfg.mediaRoots;
+in {
+  services.jellyfin = {
+    enable = true;
+    package = pkgs.jellyfin;
+    openFirewall = false;
+    user = "jellyfin";
+    group = "jellyfin";
+    inherit (jellyfinCfg) dataDir;
+  };
+
+  systemd.tmpfiles.rules =
+    ["d /var/lib/jellyfin/transcodes 0750 jellyfin jellyfin - -"]
+    ++ aclRules;
+
+  systemd.mounts = [{
+    what = "tmpfs";
+    where = "/var/lib/jellyfin/transcodes";
+    type = "tmpfs";
+    options = "size=${jellyfinCfg.transcodeSize},mode=0750,uid=jellyfin,gid=jellyfin";
+    wantedBy = ["jellyfin.service"];
+    before = ["jellyfin.service"];
+  }];
+
+  systemd.services.jellyfin.preStart = ''
+    install -d -m 0755 -o jellyfin -g jellyfin ${jellyfinCfg.dataDir}
+    install -d -m 0750 -o jellyfin -g jellyfin ${jellyfinCfg.dataDir}/config
+    install -d -m 0750 -o jellyfin -g jellyfin ${jellyfinCfg.dataDir}/cache
+    install -d -m 0750 -o jellyfin -g jellyfin ${jellyfinCfg.dataDir}/data
+    install -d -m 0750 -o jellyfin -g jellyfin ${jellyfinCfg.dataDir}/log
+  '';
+
+  systemd.services.jellyfin.unitConfig = {
+    RequiresMountsFor = [jellyfinCfg.dataDir] ++ jellyfinCfg.mediaRoots;
+  };
+}
+```
+
+### Host layer example
+
+`hosts/boreal/services.nix` imports the module and supplies all values:
+
+```nix
+# hosts/boreal/services.nix (Jellyfin section)
+{
+  my.jellyfin = {
+    vaDriver = "radeonsi";
+    dataDir = "/mnt/archive/jellyfin";
+    mediaRoots = [
+      "/mnt/archive/tv/server"
+      "/mnt/archive/movies"
+    ];
+    transcodeSize = "4G";
+  };
+}
+```
+
+`hosts/boreal/networking.nix` opens `8096/tcp`. `hosts/boreal/graphics.nix` enables hardware graphics support that the AMD VAAPI driver depends on.
+
+---
+
+## soft-serve.nix
+
+`modules/system/soft-serve.nix` enables the [Soft Serve](https://github.com/charmbracelet/soft-serve) self-hosted git server and opens the required firewall ports. It is a thin module — the host layer configures the service environment and user identity.
+
+```nix
+# modules/system/soft-serve.nix
+{
+  services.soft-serve = {
+    enable = true;
+  };
+
+  networking.firewall.allowedTCPPorts = [
+    23231 # SSH — git clone/push over SSH
+    23232 # HTTP — web UI and HTTP clone
+  ];
+}
+```
+
+<Note>
+The firewall ports for Soft Serve are opened by this reusable module rather than by `hosts/boreal/networking.nix`. If you import this module on any host, ports 23231 and 23232 will be opened automatically.
+</Note>
+
+### Host layer configuration
+
+The module enables the service but does not set the data path, admin key, or system user. `hosts/boreal/services.nix` handles those details:
+
+```nix
+# hosts/boreal/services.nix (Soft Serve section)
+{lib, ...}: {
+  imports = [../../modules/system/soft-serve.nix];
+
+  users.users.soft-serve = {
+    isSystemUser = true;
+    group = "soft-serve";
+  };
+  users.groups.soft-serve = {};
+
+  systemd.services.soft-serve = {
+    after = ["mnt-archive.mount"];
+    requires = ["mnt-archive.mount"];
+    environment = {
+      SOFT_SERVE_DATA_PATH = lib.mkForce "/mnt/archive/soft-serve";
+      SOFT_SERVE_INITIAL_ADMIN_KEYS = "ssh-ed25519 AAAA...";
+    };
+    serviceConfig = {
+      DynamicUser = lib.mkForce false;
+      User = lib.mkForce "soft-serve";
+      Group = lib.mkForce "soft-serve";
+    };
+  };
+}
+```
+
+The `after` and `requires` on `mnt-archive.mount` ensure Soft Serve does not start until the archive disk is mounted. The static `soft-serve` system user replaces the NixOS service default `DynamicUser` so the data directory ownership is stable across reboots.
+
+### Accessing Soft Serve
+
+`modules/home/users/common.nix` pre-configures an SSH client block for Soft Serve:
+
+```nix
+# SSH client block from modules/home/users/common.nix
+"soft" = {
+  hostname = config.my.borealHost;
+  port = 23231;
+  user = "gars";
+  identityFile = "~/.ssh/id_ed25519";
+  identitiesOnly = true;
+};
+```
+
+After applying, you can clone repositories with `git clone ssh://soft/<repo>` or use the `soft` alias defined in `modules/home/nix-workflows.nix`.
+
+<Tip>
+See the [Soft Serve reference](/reference/soft-serve) for the full usage guide, including repository management and SSH key registration.
+</Tip>

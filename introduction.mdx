@@ -1,0 +1,72 @@
+---
+title: "NixOS Config: modular multi-platform Nix flake"
+description: "A flake-parts configuration managing NixOS, nix-darwin, and standalone Home Manager hosts across x86_64 and ARM platforms with layered, composable profiles."
+---
+
+This repository is a personal NixOS/nix-darwin/Home Manager configuration built around a modular assembly model. Each output is composed from the smallest useful set of reusable pieces — hosts, system profiles, home profiles, and explicit overlay groups — with heavyweight features added deliberately rather than arriving through hidden coupling.
+
+The flake targets eight outputs across three platforms: NixOS (x86\_64 and ARM), nix-darwin (Apple Silicon), and standalone Home Manager (Fedora, Jetson Orin Nano). All outputs share a common module layer and a repo-local `my.*` options namespace for threading values across NixOS and Home Manager boundaries.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/guides/quickstart">
+    Add or rebuild your first output in minutes
+  </Card>
+  <Card title="Architecture" icon="cubes" href="/architecture/composition">
+    Understand how hosts, profiles, and overlays compose
+  </Card>
+  <Card title="Outputs reference" icon="table" href="/outputs">
+    See all current flake outputs and their profiles
+  </Card>
+  <Card title="Shell helpers" icon="terminal" href="/reference/shell-helpers">
+    Browse the full nr, nrb, ncopy, and nboh command surface
+  </Card>
+</CardGroup>
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Multi-platform" icon="layer-group" href="/hosts/overview">
+    NixOS x86\_64, NixOS aarch64, nix-darwin, and standalone Home Manager — one flake
+  </Card>
+  <Card title="Layered profiles" icon="sliders" href="/architecture/profiles">
+    tty, sway, and sway-full system and home profiles compose independently
+  </Card>
+  <Card title="AI tooling overlay" icon="robot" href="/modules/home">
+    Optional ai overlay adds claude-code, qwen-code, codex, opencode, and ollama
+  </Card>
+  <Card title="Sway desktop" icon="desktop" href="/modules/home">
+    Waybar, swaylock, fuzzel, mako, and theming managed entirely through Home Manager
+  </Card>
+  <Card title="Soft Serve git server" icon="code-branch" href="/reference/soft-serve">
+    Self-hosted git with SSH and HTTP running on boreal
+  </Card>
+  <Card title="Remote deployment" icon="server" href="/guides/remote-deploy">
+    Build locally and push closures to remote targets, or build on the target host
+  </Card>
+</CardGroup>
+
+## How the repo is structured
+
+The configuration is split into four layers:
+
+- **`hosts/`** — machine-specific hardware, storage, networking, users, and service-local values
+- **`modules/system/`** — reusable NixOS modules: TTY baseline, Sway compositor, gaming, containers, services
+- **`modules/home/`** — reusable Home Manager modules: CLI tools, desktop packages, dotfiles, shell helpers
+- **`modules/shared/`** — repo-local `my.*` options that cross the NixOS/Home Manager boundary
+
+`flake.nix` composes those layers through descriptor attrsets for users, hosts, home profiles, system profiles, and home overlay groups. Three builder functions — `mkOutput`, `mkDarwinOutput`, and `mkHomeOutput` — turn those descriptors into the final flake outputs.
+
+<Steps>
+  <Step title="Explore current outputs">
+    Check the [outputs table](/outputs) to see all eight current configurations and their profile selections.
+  </Step>
+  <Step title="Read the architecture">
+    The [composition model](/architecture/composition) explains how hosts, profiles, and overlay groups combine in `flake.nix`.
+  </Step>
+  <Step title="Pick a workflow">
+    Use the [quickstart guide](/guides/quickstart) to build an existing output, or the [adding a host guide](/guides/adding-a-host) to create a new one.
+  </Step>
+  <Step title="Learn the helpers">
+    The [shell helpers reference](/reference/shell-helpers) covers every `nr`, `nrb`, `ncopy`, and `nboh` variant with examples.
+  </Step>
+</Steps>

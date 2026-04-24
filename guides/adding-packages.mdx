@@ -1,0 +1,163 @@
+---
+title: "Add CLI, desktop, and system packages"
+description: "Place packages in the right layer: shared Home Manager baseline, GUI profile modules, system NixOS modules, or explicit overlay groups."
+---
+
+Where a package lives determines when it is installed and for whom. The repo organizes packages into three layers: CLI tools managed by Home Manager (`modules/home/`), desktop GUI applications also managed by Home Manager, and system-level packages managed by NixOS (`modules/system/`). Choosing the right layer — and the right module within that layer — keeps each output's package set predictable and avoids heavyweight features arriving through hidden coupling.
+
+## CLI packages
+
+CLI packages live in Home Manager modules under `modules/home/`. Every output includes the shared modules in `sharedHomeModules` (from `parts/lib.nix`), so packages added there are available in all outputs regardless of platform.
+
+### Shared CLI baseline
+
+`modules/home/cli-base-apps.nix` is the shared CLI package set. It is included in every output via `sharedHomeModules`. Add a package here if it belongs to every output on every platform:
+
+```nix
+# modules/home/cli-base-apps.nix
+home.packages = with pkgs;
+  [
+    git
+    ripgrep
+    bat
+    fzf
+    # add your package here
+  ]
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    # Linux-only packages
+    cava
+    powertop
+    s-tui
+  ];
+```
+
+Use `lib.optionals pkgs.stdenv.isLinux` for any package that is unavailable or unnecessary on macOS. The `cli-base-apps.nix` module already uses this pattern for `cava`, `powertop`, `s-tui`, `systemctl-tui`, and `proton-vpn-cli`.
+
+### AI tooling overlay
+
+`modules/home/ai.nix` installs claude-code, qwen-code, codex, opencode, and ollama. It is not included by default — outputs must explicitly opt in via `homeOverlays = ["ai"]` in their output definition:
+
+```nix
+boreal-tty = {
+  hostName = "boreal";
+  userName = "gars";
+  systemProfile = "tty";
+  homeProfile = "cli";
+  homeOverlays = ["ai"];  # adds ai.nix
+};
+```
+
+To add a new AI tool, add it to `modules/home/ai.nix`. To create a new overlay group for a different optional feature set, add an entry to `homeOverlayGroups` in `parts/lib.nix` and reference it by name in whichever outputs should include it.
+
+### Container and npm tooling
+
+`modules/home/containers.nix` provides shared container and npm user tooling including shell helpers for Podman, Quadlet, and compose workflows. It is included in `sharedHomeModules` and available in all outputs. Add container-adjacent CLI tools here.
+
+### Profile-specific CLI additions
+
+For CLI packages that belong to a specific capability profile rather than the universal baseline, add a dedicated module and include it in the relevant home profile in `parts/lib.nix`. For example, a set of development tools that only belong in Sway outputs would go in a new `modules/home/dev-tools.nix` added to the `sway` or `sway-full` profile list.
+
+## Desktop packages
+
+Desktop packages live in Home Manager modules that are selected by GUI-capable home profiles (`gui`, `sway`, `sway-full`). These modules are not included in `sharedHomeModules` — they only appear when the output selects a matching home profile.
+
+### Shared desktop baseline
+
+`modules/home/gui-base-apps.nix` is the cross-platform GUI package set included in all GUI-capable profiles. Add a package here if it belongs to every desktop output regardless of compositor or platform:
+
+```nix
+# modules/home/gui-base-apps.nix
+home.packages = with pkgs;
+  [
+    librewolf
+    obsidian
+    ayugram-desktop
+    vesktop
+    # add your GUI package here
+  ]
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    signal-desktop
+    calibre-no-speech
+  ];
+```
+
+### Heavier desktop extras
+
+`modules/home/gui-extra-apps.nix` contains heavier desktop packages that are included only in the `sway-full` home profile. This profile is used by the `boreal` output (full x86\_64 desktop) but not by ARM Sway outputs (`rpi4-sway`) or lean GUI outputs. Place packages here when they are too large or hardware-specific for the shared baseline — for example, packages requiring x86\_64 hardware or significant disk space.
+
+### Compositor-specific packages
+
+`modules/home/sway.nix` and `modules/home/sway-apps.nix` contain Sway-specific Home Manager configuration and packages (Waybar, swaylock, fuzzel, mako, and swaybg). Add compositor-specific packages and configuration here. The `sway-config` profile includes `sway.nix` only (config files, packages set to null) for targets like `jetson` where Nix-built binaries cannot run but config generation is still useful.
+
+### When to use a dedicated module vs a home overlay group
+
+| Situation | Approach |
+| --------- | -------- |
+| Package belongs in every output of a given profile | Add to the relevant profile module (`gui-base-apps.nix`, `gui-extra-apps.nix`) |
+| Package is optional and output-specific | Create a home overlay group in `homeOverlayGroups` |
+| Package is heavyweight and should not be in the baseline | Use a new dedicated module added to a specific profile or overlay group |
+| Package is an AI or experimental tool | Add to `modules/home/ai.nix` and use the `ai` overlay |
+
+## System packages
+
+System packages are NixOS-level packages installed in `environment.systemPackages` or as service dependencies. They live in `modules/system/` and are selected by system profiles.
+
+### Shared system baseline
+
+`modules/system/cli.nix` is the shared TTY/system baseline included in every NixOS output through the `tty` system profile. It enables SSH on port 2200, Avahi mDNS for `.local` resolution, and PipeWire audio. Add system packages here if they belong in every NixOS output:
+
+```nix
+# modules/system/cli.nix (example structure)
+environment.systemPackages = with pkgs; [
+  # your system package here
+];
+```
+
+### Container runtime
+
+`modules/system/containers.nix` is the shared Podman-first container runtime module. It is included in the `boreal` host via `extraSystemModules` rather than the shared system profile, because not every host runs containers. Add system-level container tooling here (`podman-compose`, `buildah`, `skopeo`, and similar).
+
+### Profile-specific system additions
+
+`modules/system/sway.nix` and `modules/system/gaming.nix` extend the system layer for GUI and gaming outputs. Add system-level display server configuration, polkit rules, greetd, or portal setup to `sway.nix`. Gaming packages like Steam and Proton compatibility go in `gaming.nix`, which is included in `sway-full`.
+
+### Host-only system settings
+
+Machine-specific system settings — firewall rules, custom mount points, hardware-specific options, or service-local values — go in files under `hosts/<hostname>/`. If a shared module needs a host-specific path or setting, define a `my.*` option in `modules/shared/options.nix`, set it from the host layer, and read it from the shared module. `modules/system/jellyfin.nix` is the canonical example of this pattern: it reads `my.jellyfin.dataDir`, `my.jellyfin.mediaRoots`, and `my.jellyfin.vaDriver` from the host rather than hardcoding any paths.
+
+## Cross-platform packages
+
+Use `lib.optionals pkgs.stdenv.isLinux` whenever a package is unavailable on macOS or provides Linux-only functionality. This pattern appears throughout the shared modules:
+
+```nix
+home.packages = with pkgs;
+  [
+    # packages available on all platforms
+    ripgrep
+    fd
+  ]
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    # Linux-only packages
+    powertop
+    s-tui
+  ];
+```
+
+The macOS and Fedora outputs (`macbook`, `fedora-mac`) both include `cli-base-apps.nix` through `sharedHomeModules`. The `lib.optionals` guard ensures Linux-only packages are silently omitted without evaluation errors on Darwin.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Modules: home" icon="house" href="/modules/home">
+    Full reference for all shared Home Manager modules
+  </Card>
+  <Card title="Modules: system" icon="gear" href="/modules/system">
+    Full reference for all shared NixOS system modules
+  </Card>
+  <Card title="Architecture: profiles" icon="sliders" href="/architecture/profiles">
+    What each system and home profile includes
+  </Card>
+  <Card title="Architecture: composition" icon="cubes" href="/architecture/composition">
+    How overlay groups and profiles compose into outputs
+  </Card>
+</CardGroup>

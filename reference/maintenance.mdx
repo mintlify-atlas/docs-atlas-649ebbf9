@@ -1,0 +1,231 @@
+---
+title: "Store and generation maintenance commands"
+description: "Reference for lockfile management, store inspection, generation listing, and cleanup commands — with recommended sequences for common maintenance tasks."
+---
+
+Keeping a Nix system healthy means periodically updating inputs, inspecting what the store is holding, diffing generations to understand what changed, and running garbage collection to recover disk space. The helpers in this repo wrap `nix flake`, `nix store`, `nix-env`, `home-manager`, and `nh` into short commands so routine maintenance stays auditable and explicit. All of them live in `modules/home/nix-workflows.nix` alongside the apply helpers.
+
+## Lockfile commands
+
+These operate from the repo root regardless of your current working directory.
+
+| Command | What it does |
+| --- | --- |
+| `nfu` | Run `nix flake update` — refresh all inputs in `flake.lock` |
+| `nfu-input <input-name>` | Update a single flake input with `nix flake lock --update-input` |
+| `nlock` | Show `flake.lock` git status and diff — useful after an update to see exactly what changed |
+
+```bash
+# Update one input and immediately inspect what changed in the lockfile
+nfu-input nixpkgs
+nlock
+```
+
+```bash
+# Update all inputs at once
+nfu
+nlock
+```
+
+<Warning>
+  After updating inputs, always run `ncheck` or build an affected output with `nrb` before switching. A fresh `nixpkgs` pin can change package versions or module options unexpectedly.
+</Warning>
+
+## Store inspection
+
+| Command | What it does |
+| --- | --- |
+| `nspace` | Print disk usage for `/` and `/nix/store` (falls back to just `/` on non-NixOS hosts) |
+| `nspace-why` | `nspace` plus summaries of `/nix/store`, profile roots, and Home Manager profiles — then lists the 10 largest store paths |
+| `ntop-store [count]` | Show the largest paths in `/nix/store`, sorted by size; default is 20 entries |
+
+```bash
+nspace          # quick disk check
+nspace-why      # full picture — store + profiles + top 10 paths
+ntop-store 30   # show the 30 largest store paths
+```
+
+## Generation management
+
+| Command | What it does |
+| --- | --- |
+| `ngen-system` | List NixOS system generations via `nix-env -p /nix/var/nix/profiles/system --list-generations` |
+| `ngen-hm` | List Home Manager generations via `home-manager generations` |
+| `ngen-all` | Run `ngen-system` then `ngen-hm`, with section headers |
+| `ndiff-system [from] [to]` | Diff two system generations using `nix store diff-closures`; defaults to previous vs current |
+
+```bash
+# See what the last switch changed
+ngen-system
+ndiff-system
+
+# Diff two specific generations
+ndiff-system 123 124
+
+# Check both system and HM generations at once
+ngen-all
+```
+
+`ndiff-system` resolves generation numbers to their `/nix/var/nix/profiles/system-<N>-link` paths automatically, so you only need to pass the numbers listed by `ngen-system`.
+
+## Cleanup
+
+The cleanup commands progress from conservative (GC roots inspection) to aggressive (full store GC). Run them in order when you want to understand before you delete.
+
+| Command | What it does |
+| --- | --- |
+| `nclean-roots` | Print all current GC roots — nothing is deleted |
+| `nclean-gc` | Run `nix store gc` to remove all store paths with no live GC root |
+| `nclean-system` | Delete old system and profile generations with `nh clean all` |
+| `nclean-hm [age]` | Expire old Home Manager generations with `nh clean user`; default age is `-7 days` |
+| `nclean-all [age]` | Run `nclean-system`, optionally `nclean-hm`, then `nclean-gc` in sequence |
+
+```bash
+# Inspect roots before deciding to collect
+nclean-roots
+
+# Clean system generations, then collect
+nclean-system
+nclean-gc
+
+# Full sweep in one command
+nclean-all
+
+# Full sweep, keep HM generations younger than 14 days
+nclean-all "-14 days"
+```
+
+## About nh
+
+The apply and cleanup helpers use `nh` rather than invoking `nixos-rebuild` or `nix-env` directly. `nh` provides:
+
+- **Human-friendly diffs** via `nvd` before any activation — you see exactly which packages changed before committing
+- **No manual `sudo`** for NixOS switch operations — `nh os switch` handles privilege escalation internally
+- **Cleaner flake ergonomics** — no need to manually pass `--flake .#<output>` to every command
+
+The `nclean-system` and `nclean-hm` helpers use `nh clean all` and `nh clean user` respectively, which also show what will be removed before proceeding. For more on `nh`, see the [nh project](https://github.com/viperml/nh).
+
+## Recommended sequences
+
+### Edit one module and validate it
+
+After changing a module, check formatting and do a dry-run diff before applying.
+
+<Steps>
+  <Step title="Open the flake or the module">
+    ```bash
+    nflk
+    ```
+  </Step>
+  <Step title="Format all tracked Nix files">
+    ```bash
+    fnix
+    ```
+  </Step>
+  <Step title="Dry-run with diff to preview the change">
+    ```bash
+    npre boreal
+    ```
+
+    `npre` runs `fnixc` (format check) then `nrd <output>` (dry-run with `nh` diff).
+  </Step>
+</Steps>
+
+### Validate the whole repo before committing
+
+<Steps>
+  <Step title="Format all tracked Nix files">
+    ```bash
+    fnix
+    ```
+  </Step>
+  <Step title="Run full validation">
+    ```bash
+    ncheck-full
+    ```
+
+    `ncheck-full` checks formatting, runs `nix flake check`, and evaluates all three output families.
+  </Step>
+</Steps>
+
+### Build on one host and push to another
+
+<Steps>
+  <Step title="Build the output on your current machine">
+    ```bash
+    nboh rpi4-tty localhost gars@rpi4.local build
+    ```
+
+    `localhost` is the build host (your machine); `gars@rpi4.local` is the target.
+  </Step>
+  <Step title="Test the copied closure on the target">
+    ```bash
+    ncopy-test rpi4-tty gars@rpi4.local
+    ```
+
+    This copies the already-built closure and activates it with `test` — no rebuild on the target.
+  </Step>
+</Steps>
+
+### Update one input and inspect the lockfile
+
+<Steps>
+  <Step title="Update the input">
+    ```bash
+    nfu-input nixpkgs
+    ```
+  </Step>
+  <Step title="Review what changed in the lockfile">
+    ```bash
+    nlock
+    ```
+  </Step>
+  <Step title="Validate the updated flake">
+    ```bash
+    ncheck
+    ```
+  </Step>
+</Steps>
+
+### Recover disk space after a bad update attempt
+
+<Steps>
+  <Step title="Check how much space is in use">
+    ```bash
+    nspace
+    nspace-why
+    ```
+  </Step>
+  <Step title="Clean old generations and run GC">
+    ```bash
+    nclean-all
+    ```
+
+    Or manually, if you want more control:
+
+    ```bash
+    sudo nix-collect-garbage -d
+    nclean-gc
+    ```
+  </Step>
+</Steps>
+
+### Inspect what changed between generations
+
+<Steps>
+  <Step title="List system generations">
+    ```bash
+    ngen-system
+    ```
+  </Step>
+  <Step title="Diff previous vs current generation">
+    ```bash
+    ndiff-system
+    ```
+  </Step>
+  <Step title="Diff two specific generations (optional)">
+    ```bash
+    ndiff-system 123 124
+    ```
+  </Step>
+</Steps>

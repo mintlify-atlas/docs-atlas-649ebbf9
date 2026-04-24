@@ -1,0 +1,53 @@
+---
+title: "Modules: layout, layers, and guidelines"
+description: "How modules/ is split into system, home, and shared layers, what belongs in each, and the rules that keep modules reusable across hosts."
+---
+
+The `modules/` directory holds all reusable building blocks for this flake. Nothing in `modules/` should encode machine-specific facts — those belong in `hosts/`. A module expresses a capability or a package baseline; a host supplies the values that configure it.
+
+## Three-layer split
+
+The directory is divided into three sublayers, each targeting a different evaluation context.
+
+### `modules/system/`
+
+NixOS modules that configure the running system: services, compositor plumbing, system-wide packages, and host-agnostic integration points. These are included through `systemProfiles` (in `flake.nix` profile descriptors) or through `extraSystemModules` on a host descriptor.
+
+Examples: `cli.nix`, `sway.nix`, `containers.nix`, `gaming.nix`, `flatpak.nix`, `gamescope.nix`, `borg.nix`, `jellyfin.nix`, `soft-serve.nix`.
+
+### `modules/home/`
+
+Home Manager modules that install user packages, manage dotfiles, configure programs, and define shell aliases. These are included through `homeProfiles` or `extraHomeModules` and always evaluate in Home Manager context.
+
+Examples: `cli-base-apps.nix`, `gui-base-apps.nix`, `sway.nix`, `gaming.nix`, `ai.nix`, `containers.nix`, `nix-workflows.nix`, and the `users/` subtree.
+
+### `modules/shared/`
+
+Cross-layer glue. Currently contains `options.nix`, which declares the repo-local `my.*` namespace. Both NixOS and Home Manager modules read from `my.*`, but only the host layer and user modules write to it.
+
+## Modularity rules
+
+Follow these rules when adding or editing modules:
+
+- Put reusable behavior in `modules/`, not in `hosts/`. One-off machine facts go in the host directory.
+- If a module needs a value that varies per-host (a path, a hostname, a package variant), define it as a `my.*` option in `modules/shared/options.nix` and let the host supply it.
+- Keep optional heavyweight feature groups (gaming, AI tooling, Flatpak) separate and select them explicitly at the output definition — do not silently bundle them into profiles.
+- Keep module names descriptive and scoped to their layer: `modules/system/containers.nix` vs `modules/home/containers.nix` are related but serve different evaluation contexts.
+- Keep detailed explanation in Markdown docs (here) rather than long Nix file comments.
+
+## Module pages
+
+<CardGroup cols={2}>
+  <Card title="System modules" icon="server" href="/modules/system">
+    cli.nix, sway.nix, containers.nix, gaming.nix, flatpak.nix, gamescope.nix, borg.nix
+  </Card>
+  <Card title="Home Manager modules" icon="house" href="/modules/home">
+    cli-base-apps, gui-base-apps, sway, gaming, ai, containers, nix-workflows, user modules
+  </Card>
+  <Card title="Service modules" icon="plug" href="/modules/services">
+    jellyfin.nix and soft-serve.nix — standalone system modules for hosted services
+  </Card>
+  <Card title="Shared options" icon="sliders" href="/architecture/shared-options">
+    The full my.* option namespace defined in modules/shared/options.nix
+  </Card>
+</CardGroup>

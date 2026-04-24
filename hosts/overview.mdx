@@ -1,0 +1,72 @@
+---
+title: "Hosts: all flake outputs and their platforms"
+description: "An overview of every host in the flake — NixOS, nix-darwin, and standalone Home Manager — with their profiles, systems, and links to detailed pages."
+---
+
+The flake manages six active host configurations across three platforms. Each host maps to one or more flake outputs, with the output name determining which system profile, home profile, and overlay groups are composed together. `cyberdeck` (Jetson NixOS) and `nixos-vm` are defined but not linked from this group — the former is disabled, the latter needs no dedicated page.
+
+## Host summary
+
+| Host | Output(s) | Type | System | Home profile |
+| --- | --- | --- | --- | --- |
+| `boreal` | `boreal`, `boreal-tty` | NixOS x86\_64 | `sway-full` / `tty` | `sway-full` / `cli` |
+| `nixos-vm` | `nixos-vm` | NixOS x86\_64 | `tty` | `cli` |
+| `rpi4` | `rpi4-sway`, `rpi4-tty` | NixOS aarch64 | `sway` / `tty` | `sway` / `cli` |
+| `macbook` | `macbook` | nix-darwin aarch64 | n/a | `gui` |
+| `fedora-mac` | `fedora-mac` | Standalone HM aarch64 | n/a | `sway` |
+| `jetson` | `jetson` | Standalone HM aarch64 | n/a | `sway-config` |
+
+The `ai` home overlay is active on `boreal`, `boreal-tty`, `rpi4-tty`, `rpi4-sway`, and `macbook`. It adds claude-code, qwen-code, codex, opencode, and the ollama runtime.
+
+## Platform types
+
+**NixOS hosts** (`boreal`, `rpi4`, `nixos-vm`) produce `nixosConfigurations` outputs. The builder function `mkOutput` in `flake.nix` assembles them from a `hostName`, `userName`, `systemProfile`, `homeProfile`, and optional `homeOverlays`. The system profile drives `modules/system/` imports; the home profile drives `modules/home/` imports.
+
+**nix-darwin hosts** (`macbook`) produce `darwinConfigurations` outputs via `mkDarwinOutput`. They have no system profile — nix-darwin manages macOS system preferences, Homebrew casks, and shell configuration directly. The home profile still controls the Home Manager layer.
+
+**Standalone Home Manager hosts** (`fedora-mac`, `jetson`) produce `homeConfigurations` outputs via `mkHomeOutput`. These run on non-NixOS Linux systems — Fedora (Asahi Linux) and Ubuntu (JetPack) respectively. There is no system-level Nix configuration; the host OS must satisfy Sway and audio prerequisites manually before switching to a `sway` or `sway-config` home profile.
+
+## Host descriptor structure
+
+Each output is defined in `parts/nixos.nix`, `parts/darwin.nix`, or `parts/home.nix` as an attrset. A NixOS descriptor looks like:
+
+```nix
+boreal = {
+  hostName    = "boreal";       # maps to hosts/boreal/configuration.nix
+  userName    = "gars";         # maps to modules/home/users/gars/
+  systemProfile = "sway-full";  # maps to a system profile in flake.nix
+  homeProfile   = "sway-full";  # maps to a home profile in flake.nix
+  homeOverlays  = ["ai"];       # imports modules/home/ai.nix
+};
+```
+
+A standalone Home Manager descriptor omits `hostName` and `systemProfile`:
+
+```nix
+fedora-mac = {
+  userName      = "htmlgxn";
+  homeProfile   = "sway";
+  system        = "aarch64-linux";
+  homeOverlays  = [];
+  hostHomeModules = [ (self + /hosts/fedora-mac/home.nix) ];
+};
+```
+
+`hostHomeModules` lets each host splice host-local Home Manager modules (path overrides, shell aliases, SSH entries) into the output without affecting any other host.
+
+## Host pages
+
+<CardGroup cols={2}>
+  <Card title="Boreal" icon="desktop" href="/hosts/boreal">
+    x86\_64 NixOS workstation with full Sway desktop, gaming, and AMD GPU
+  </Card>
+  <Card title="Raspberry Pi 4" icon="microchip" href="/hosts/rpi4">
+    aarch64 NixOS server with tty and Sway outputs, built from boreal
+  </Card>
+  <Card title="Macbook" icon="apple" href="/hosts/macbook">
+    Apple Silicon nix-darwin host with AeroSpace tiling and Homebrew casks
+  </Card>
+  <Card title="Standalone Home Manager" icon="box" href="/hosts/standalone-hm">
+    Fedora (Asahi) and Jetson Orin Nano — Home Manager on non-NixOS Linux
+  </Card>
+</CardGroup>

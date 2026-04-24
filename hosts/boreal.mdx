@@ -1,0 +1,150 @@
+---
+title: "Boreal: x86_64 NixOS desktop with gaming and AI"
+description: "Full Sway desktop workstation on x86_64 with AMD GPU, Steam gaming, Jellyfin media server, Soft Serve git, and the ai overlay for local LLM tooling."
+---
+
+Boreal is the primary workstation. It produces two flake outputs: `boreal` (full Sway desktop with the `sway-full` system and home profiles) and `boreal-tty` (TTY-only with the `tty` system and `cli` home profiles). Both outputs include the `ai` home overlay, which adds claude-code, qwen-code, codex, opencode, and the ollama runtime. The host-local `hosts/boreal/home.nix` module applies Boreal-specific overrides to every boreal output.
+
+## Outputs
+
+| Output | System profile | Home profile | Home overlays |
+| --- | --- | --- | --- |
+| `boreal` | `sway-full` | `sway-full` | `ai` |
+| `boreal-tty` | `tty` | `cli` | `ai` |
+
+Apply with:
+
+```bash
+nrs        # nh os switch . -H boreal
+nrtty      # nh os switch . -H boreal-tty
+```
+
+Or directly:
+
+```bash
+nh os switch . -H boreal
+nh os switch . -H boreal-tty
+```
+
+## Host structure
+
+Boreal's `hosts/boreal/configuration.nix` is a thin import list. The host logic is split into focused files:
+
+| File | Purpose |
+| --- | --- |
+| `base.nix` | Bootloader, kernel, binfmt aarch64 emulation, udev rules |
+| `graphics.nix` | AMD GPU (`amdgpu`), 32-bit graphics support, OpenCL, graphite keyboard layout |
+| `storage.nix` | ext4 mounts, mergerfs pool, swap, zram |
+| `networking.nix` | Hostname, firewall |
+| `users.nix` | `gars` user, `my.primaryUser` |
+| `services.nix` | Jellyfin values, Soft Serve configuration, Borg backup |
+
+## Graphics and gaming
+
+`hosts/boreal/graphics.nix` configures the AMD RX 570:
+
+- `amdgpu` kernel module loaded early via `boot.initrd.kernelModules`
+- `hardware.graphics.enable32Bit = true` — required for Steam Proton compatibility
+- `mesa.opencl` and `RUSTICL_ENABLE=radeonsi` enable OpenCL on the AMD GPU
+- `ROC_ENABLE_PRE_VEGA=1` enables ROCm support for older AMD cards
+
+The `sway-full` system profile imports `modules/system/gaming.nix`, which adds Steam and Proton packages at the system level.
+
+The custom `graphite` keyboard layout is registered via `services.xserver.xkb.extraLayouts`, making it available to Sway. `hosts/boreal/home.nix` sets `my.dualKeyboardLayout = true`, which enables the dual us/graphite layout switcher in Waybar.
+
+## Storage layout
+
+`hosts/boreal/storage.nix` defines the full disk layout using `mkExt4Mount` helpers:
+
+| Mountpoint | Device / type | Purpose |
+| --- | --- | --- |
+| `/mnt/ironwolf` | ext4 by UUID | IronWolf HDD (first pool member) |
+| `/mnt/seagate6` | ext4 by UUID | Seagate 6TB HDD (second pool member) |
+| `/mnt/evo` | ext4 by UUID | Samsung EVO SSD |
+| `/mnt/archive` | `fuse.mergerfs` over ironwolf + seagate6 | Merged view of both HDDs |
+
+`/mnt/archive` is the merged pool — data written there lands on whichever member has space (`category.create=ff`, `moveonenospc=true`, `minfreespace=50G`). `/mnt/backup` exists outside the pool, owned by `my.primaryUser` via `systemd.tmpfiles.rules`.
+
+Swap is a 16 GB swapfile at `/home/swapfile` (priority 10) complemented by zram at 25% of RAM (priority 100, first-preference). `vm.swappiness` is set to 20.
+
+## Networking and firewall
+
+`hosts/boreal/networking.nix` enables NetworkManager and opens the following TCP ports:
+
+| Port | Service |
+| --- | --- |
+| `8096` | Jellyfin HTTP |
+| `2200` | SSH (alternate port — shared with `modules/system/cli.nix`) |
+| `23231` | Soft Serve SSH |
+| `23232` | Soft Serve HTTP |
+
+<Note>
+  The Soft Serve ports (23231, 23232) are also opened by `modules/system/soft-serve.nix`. They appear in `networking.nix` as well, so the firewall rule is declared at the host level alongside the other boreal-specific ports.
+</Note>
+
+## Services
+
+### Jellyfin
+
+`hosts/boreal/services.nix` supplies `my.jellyfin.*` values consumed by `modules/system/jellyfin.nix`:
+
+```nix
+my.jellyfin = {
+  vaDriver   = "radeonsi";
+  dataDir    = "/mnt/archive/jellyfin";
+  mediaRoots = [
+    "/mnt/archive/tv/server"
+    "/mnt/archive/movies"
+  ];
+  transcodeSize = "4G";
+};
+```
+
+The shared module creates data directories in `preStart`, mounts a tmpfs transcode volume, applies ACLs to every media root, and requires those mountpoints before starting the service.
+
+### Soft Serve
+
+`hosts/boreal/services.nix` imports `modules/system/soft-serve.nix` and overrides the data path and admin key:
+
+```nix
+systemd.services.soft-serve.environment.SOFT_SERVE_DATA_PATH =
+  lib.mkForce "/mnt/archive/soft-serve";
+```
+
+The service requires `mnt-archive.mount` before starting. A static `soft-serve` system user owns the data directory. See [Soft Serve reference](/reference/soft-serve) for the full usage guide.
+
+### Borg backup
+
+`hosts/boreal/services.nix` imports `modules/system/borg.nix` and configures `my.borg.*` with the repo at `/mnt/archive/backup/gars`. The backup covers `~/dev`, `~/videos`, `~/downloads`, `~/pictures`, `~/documents`, `~/archive`, `~/music`, `~/.config`, and AI tool credential directories (`~/.claude`, `~/.codex`, `~/.qwen`, `~/.gemini`).
+
+## Host-local Home Manager overrides
+
+`hosts/boreal/home.nix` is applied to every boreal output via `hostHomeModules` in `flake.nix`. It sets:
+
+| Option | Value | Effect |
+| --- | --- | --- |
+| `my.ollamaPackage` | `pkgs.ollama-rocm` | Uses the ROCm-accelerated ollama build on the AMD GPU |
+| `my.dualKeyboardLayout` | `true` | Enables us/graphite layout switcher in Waybar |
+| `my.showRootDisk` | `true` | Shows root disk usage percentage in Waybar |
+| `my.borealHost` | `"localhost"` | SSH targets use localhost instead of `boreal.local` |
+| `my.terminalFontSize` | `9.0` | Smaller terminal font for the primary display (default is `11.0`) |
+
+It also adds:
+
+- `yt-dlp` to `home.packages`
+- `nrs` and `nrtty` shell aliases for both bash and nushell
+- Mount navigation aliases: `cdarch`, `cdsea`, `cdevo`
+- `LD_LIBRARY_PATH` pointing to `stdenv.cc.cc.lib` for nix-ld compatibility
+- An SSH match block for `rpi4` (port 2200, `gars@rpi4.local`)
+- A daily systemd user timer to sync Brave bookmarks to git
+- A daily systemd user timer to update the Brave Nightly overlay and rebuild
+
+## Cross-architecture builds
+
+`hosts/boreal/base.nix` enables binfmt emulation for `aarch64-linux`:
+
+```nix
+boot.binfmt.emulatedSystems = ["aarch64-linux"];
+```
+
+This allows boreal to build and evaluate the `rpi4-tty` and `rpi4-sway` NixOS outputs without a real ARM host. See [remote deployment](/guides/remote-deploy) for the `ncopy` and `nremote-build` workflow.
